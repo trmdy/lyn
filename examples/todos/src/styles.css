@@ -1,0 +1,36 @@
+:root {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #1c1c1e;
+  background: #f6f5f2;
+  --muted: #8a8780;
+  --line: #e4e1da;
+  --accent: #2f6f4f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+.app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+aside { border-right: 1px solid var(--line); padding: 24px 16px; display: flex; flex-direction: column; gap: 24px; background: #fbfaf8; }
+h1 { font-size: 18px; margin: 0 8px; }
+h2 { font-size: 24px; margin: 0; }
+h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
+nav ul, .activity ul, .todos { list-style: none; margin: 0; padding: 0; }
+nav button { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
+nav button:hover { background: #efede8; }
+nav button.active { background: #e6efe9; color: var(--accent); font-weight: 600; }
+.badge { font-size: 12px; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: white; text-align: center; font-variant-numeric: tabular-nums; }
+input:not([type]) { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+nav form { margin-top: 8px; }
+main { padding: 40px 48px; max-width: 720px; display: flex; flex-direction: column; gap: 24px; }
+header p { margin: 4px 0 0; }
+.muted { color: var(--muted); font-size: 14px; }
+section { display: flex; flex-direction: column; gap: 12px; }
+.todos li { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.todos label { display: flex; align-items: center; gap: 12px; cursor: pointer; flex: 1; }
+.todos input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.todos li.done span { color: var(--muted); text-decoration: line-through; }
+.remove { border: 0; background: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 0 8px; }
+.remove:hover { color: #b3261e; }
+.activity { margin-top: auto; gap: 4px; }
+.activity li { font-size: 13px; padding: 4px 8px; }
+.ping { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }

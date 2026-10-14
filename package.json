@@ -1,0 +1,11 @@
+{
+  "name": "lyn-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db": "sh scripts/db.sh",
+    "dev": "pnpm --filter todos dev",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
