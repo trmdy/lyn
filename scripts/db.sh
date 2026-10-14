@@ -20,7 +20,7 @@ listen_addresses = 'localhost'
 unix_socket_directories = '$PGDATA'
 CONF
     fi
-    "$PGBIN/pg_ctl" -l "$PGDATA/server.log" -w start >/dev/null
+    "$PGBIN/pg_ctl" status >/dev/null 2>&1 || "$PGBIN/pg_ctl" -l "$PGDATA/server.log" -w start >/dev/null
     "$PGBIN/psql" -h localhost -U postgres -tAc "select 1 from pg_database where datname='$DB'" | grep -q 1 \
       || "$PGBIN/createdb" -h localhost -U postgres "$DB"
     echo "postgres://postgres@localhost:$PGPORT/$DB"
