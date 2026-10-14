@@ -2,6 +2,8 @@ import { registry, type Definition } from "../shared/registry.ts"
 import { queryKey } from "../shared/wire.ts"
 import type { ReadDb, Tables, WriteDb } from "./db.ts"
 
+export interface Session {}
+
 export type { ReadDb, ReadQuery, Tables, WriteDb, WriteQuery } from "./db.ts"
 
 type ValidationResult<T> =
@@ -49,15 +51,18 @@ export interface Invalidate {
 
 export interface QueryCtx {
   db: ReadDb
+  session: Session | null
   depends(tag: string): void
 }
 
 export interface MutationCtx {
   db: WriteDb
+  session: Session | null
   invalidate: Invalidate
 }
 
 export interface ActionCtx {
+  session: Session | null
   runQuery<A, R>(query: QueryRef<A, R>, args: A): Promise<R>
   runMutation<A, R>(mutation: MutationRef<A, R>, args: A): Promise<R>
   invalidate: Invalidate

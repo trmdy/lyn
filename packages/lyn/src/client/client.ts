@@ -51,6 +51,7 @@ export class LynClient {
   #outgoing = { add: new Set<Entry>(), remove: new Set<number>() }
   #outgoingScheduled = false
   #resync?: { keys: Set<string>; mutations: Set<string> }
+  #source?: EventSource
 
   constructor(options: LynClientOptions = {}) {
     this.#fetchQuery = options.fetchQuery
@@ -183,8 +184,14 @@ export class LynClient {
     })
   }
 
+  reconnect() {
+    this.#source?.close()
+    this.#connect()
+  }
+
   #connect() {
     const source = new EventSource(`${this.#baseUrl}/_lyn/events`)
+    this.#source = source
     source.addEventListener("hello", (event) => this.#onHello(JSON.parse((event as MessageEvent).data).clientId))
     source.addEventListener("frame", (event) => this.#onFrame(decode<ServerFrame>((event as MessageEvent).data)))
   }

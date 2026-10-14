@@ -34,3 +34,8 @@ section { display: flex; flex-direction: column; gap: 12px; }
 .activity { margin-top: auto; gap: 4px; }
 .activity li { font-size: 13px; padding: 4px 8px; }
 .ping { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }
+.account { display: flex; gap: 8px; margin: 0 8px; }
+.account select { flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.account button, .sign-in button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }
+.sign-in { max-width: 280px; margin: 120px auto; display: flex; flex-direction: column; gap: 8px; }
+.sign-in button { padding: 10px; font-weight: 600; }

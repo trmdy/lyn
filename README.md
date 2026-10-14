@@ -66,6 +66,32 @@ For data that doesn't live in Postgres, invalidate manually: call `ctx.depends("
 
 Declare table types once with module augmentation (`declare module "lyn/server" { interface Tables { todos: Todo } }`). Columns are camelCase in JavaScript and snake_case in SQL.
 
+## Auth
+
+Pass an `auth` hook that turns a request into a session. Every query, mutation and action then runs as that user, with the session available as `ctx.session`.
+
+```ts
+await createLynServer({
+  databaseUrl,
+  role: "lyn_app",
+  auth: ({ cookies }) => (verify(cookies.session) ? { userId } : null),
+  onRequest: (request, response) => handleLoginRoutes(request, response),
+})
+```
+
+Inside each transaction, Lyn sets `lyn.session` to the session as JSON and, if `role` is given, switches to that database role. That means Postgres row-level security works on live queries too:
+
+```sql
+create function current_user_id() returns uuid language sql stable
+as $$ select (nullif(current_setting('lyn.session', true), '')::jsonb ->> 'userId')::uuid $$;
+
+create policy owner on lists using (owner_id = current_user_id()) with check (owner_id = current_user_id());
+```
+
+Subscriptions are shared only between connections with the same session. A change to another user's rows can trigger a re-run, but row-level security filters it out and nothing is sent. Effects run as the system, with no role and no session, because they react to the database rather than to a user.
+
+When the session changes (sign in, sign out, switching user), call `useLyn().reconnect()`. The event stream reconnects with the new cookie and every subscription refreshes in place. The example signs sessions with HMAC cookies; see `examples/todos/server.ts`.
+
 ## How it works
 
 1. **Change stream.** On startup the server creates a publication and a temporary logical replication slot (`pgoutput`). The slot disappears when the server stops, so a crashed server can't fill the disk with old WAL.
@@ -81,12 +107,12 @@ Declare table types once with module augmentation (`declare module "lyn/server" 
 These work and have been verified end to end:
 
 - live queries, `live()` components and SSR/hydration
+- per-user sessions with row-level security, including switching users without a reload
 - optimistic mutations, effects, actions and tag invalidation
 - precise invalidation, and changes made directly in `psql`
 
 Not built yet:
 
-- auth/session context for queries
 - a production build (`vite build` plus a production server)
 - running more than one server node
 - incremental view maintenance instead of re-running queries

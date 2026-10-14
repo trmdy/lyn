@@ -6,6 +6,7 @@ import {
   diffRows,
   encode,
   queryKey,
+  stableStringify,
   type MutationRequest,
   type RowsPatch,
   type ServerFrame,
@@ -21,6 +22,7 @@ import {
   type EffectDefinition,
   type Invalidation,
   type MutationCtx,
+  type Session,
 } from "./index.ts"
 
 type Row = Record<string, unknown>
@@ -40,6 +42,8 @@ interface Commit {
 
 interface Connection {
   id: string
+  session: Session | null
+  sessionKey: string
   send: (frame: string) => void
   subs: Map<number, Group>
 }
@@ -51,6 +55,8 @@ type Update =
 
 interface Group {
   key: string
+  queryKey: string
+  session: Session | null
   name: string
   args: unknown
   deps: Dep[]
@@ -60,6 +66,8 @@ interface Group {
   error?: string
   subscribers: Map<string, { connection: Connection; sub: number }>
 }
+
+export const sessionKey = (session: Session | null) => (session ? stableStringify(session) : "anonymous")
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -129,6 +137,7 @@ class TempSlotPgoutput extends PgoutputPlugin {
 export class Engine {
   readonly pool: pg.Pool
   readonly #databaseUrl: string
+  readonly #role?: string
   readonly #groups = new Map<string, Group>()
   readonly #connections = new Map<string, Connection>()
   readonly #pendingMutations = new Map<number, { connectionId?: string; mutationId: string; at: number }>()
@@ -141,8 +150,9 @@ export class Engine {
   #replication?: LogicalReplicationService
   #closed = false
 
-  constructor(databaseUrl: string) {
+  constructor(databaseUrl: string, options: { role?: string } = {}) {
     this.#databaseUrl = databaseUrl
+    this.#role = options.role
     this.pool = new pg.Pool({ connectionString: databaseUrl, max: 20 })
   }
 
@@ -294,7 +304,7 @@ export class Engine {
   #isAffected(group: Group, commits: Commit[], invalidations: Invalidation[]) {
     for (const invalidation of invalidations) {
       if (invalidation.kind === "all") return true
-      if (invalidation.kind === "query" && invalidation.key === group.key) return true
+      if (invalidation.kind === "query" && invalidation.key === group.queryKey) return true
       if (group.deps.some((dep) => depMatchesInvalidation(dep, invalidation))) return true
     }
     for (const commit of commits)
@@ -329,14 +339,23 @@ export class Engine {
     return definition
   }
 
-  async #execute(name: string, args: unknown, exec: Executor, deps: Dep[] = []) {
+  async #actAs(exec: Executor, session: Session | null) {
+    await exec.query("select set_config('lyn.session', $1, true), set_config('role', $2, true)", [
+      session ? JSON.stringify(session) : "",
+      this.#role ?? "none",
+    ])
+  }
+
+  async #execute(name: string, args: unknown, exec: Executor, session: Session | null, deps: Dep[] = []) {
     const definition = this.#definition(name, "query")
     const validArgs = await validate(definition.args as any, args)
+    await this.#actAs(exec, session)
     const value = await resolveShallow(
       await definition.handler(
         {
           db: createDb({ exec, deps, readOnly: true }),
           depends: (tag: string) => deps.push({ tag }),
+          session,
         },
         validArgs,
       ),
@@ -347,7 +366,7 @@ export class Engine {
   async #run(group: Group, exec: Executor): Promise<Update | null> {
     const deps: Dep[] = []
     try {
-      const value = await this.#execute(group.name, group.args, exec, deps)
+      const value = await this.#execute(group.name, group.args, exec, group.session, deps)
       group.deps = deps
       const encoded = encode(value)
       if (encoded === group.encoded && !group.error) return null
@@ -365,12 +384,12 @@ export class Engine {
     }
   }
 
-  runQuery(name: string, args: unknown) {
-    return this.#withSnapshot([], (exec) => this.#execute(name, args, exec))
+  runQuery(name: string, args: unknown, session: Session | null) {
+    return this.#withSnapshot([], (exec) => this.#execute(name, args, exec, session))
   }
 
-  connect(send: (frame: string) => void): Connection {
-    const connection: Connection = { id: randomUUID(), send, subs: new Map() }
+  connect(send: (frame: string) => void, session: Session | null): Connection {
+    const connection: Connection = { id: randomUUID(), session, sessionKey: sessionKey(session), send, subs: new Map() }
     this.#connections.set(connection.id, connection)
     return connection
   }
@@ -392,18 +411,29 @@ export class Engine {
     if (!group.subscribers.size) this.#groups.delete(group.key)
   }
 
-  subscribe(request: SubscribeRequest) {
+  subscribe(request: SubscribeRequest, session: Session | null) {
     return this.#serial(async () => {
       const connection = this.#connections.get(request.clientId)
       if (!connection) throw new Error("lyn: unknown client")
+      if (connection.sessionKey !== sessionKey(session)) throw new Error("lyn: session changed; reconnect the event stream")
       for (const sub of request.remove) this.#detach(connection, sub)
       const messages: ServerMessage[] = []
       for (const { sub, name, args } of request.add) {
         this.#detach(connection, sub)
-        const key = queryKey(name, args)
+        const key = `${queryKey(name, args)}@${connection.sessionKey}`
         let group = this.#groups.get(key)
         if (!group) {
-          group = { key, name, args, deps: [], value: undefined, version: 0, subscribers: new Map() }
+          group = {
+            key,
+            queryKey: queryKey(name, args),
+            session: connection.session,
+            name,
+            args,
+            deps: [],
+            value: undefined,
+            version: 0,
+            subscribers: new Map(),
+          }
           await this.#withSnapshot([], (exec) => this.#run(group!, exec))
           this.#groups.set(key, group)
         }
@@ -419,11 +449,11 @@ export class Engine {
     })
   }
 
-  async mutate(request: MutationRequest) {
+  async mutate(request: MutationRequest, session: Session | null) {
     const definition = this.#definition(request.name, "mutation")
     const args = await validate(definition.args as any, request.args)
     let xid: number | undefined
-    const { result, invalidations } = await this.#inTransaction(async (ctx, client) => {
+    const { result, invalidations } = await this.#inTransaction(session, async (ctx, client) => {
       const result = await definition.handler(ctx, args)
       const { rows } = await client.query("select pg_current_xact_id_if_assigned()::text as xid")
       if (rows[0].xid) {
@@ -439,14 +469,16 @@ export class Engine {
     return { result, settled: xid === undefined }
   }
 
-  async #inTransaction<T>(task: (ctx: MutationCtx, exec: Executor) => Promise<T>) {
+  async #inTransaction<T>(session: Session | null | "system", task: (ctx: MutationCtx, exec: Executor) => Promise<T>) {
     const client = await this.pool.connect()
     const exec = serialized(client)
     const invalidations: Invalidation[] = []
     try {
       await client.query("begin")
+      if (session !== "system") await this.#actAs(exec, session)
       const ctx: MutationCtx = {
         db: createDb({ exec, deps: [], readOnly: false }),
+        session: session === "system" ? null : session,
         invalidate: createInvalidate((invalidation) => invalidations.push(invalidation)),
       }
       const result = await task(ctx, exec)
@@ -460,14 +492,15 @@ export class Engine {
     }
   }
 
-  async act(name: string, rawArgs: unknown) {
+  async act(name: string, rawArgs: unknown, session: Session | null) {
     const definition = this.#definition(name, "action")
     const args = await validate(definition.args as any, rawArgs)
     return definition.handler(
       {
-        runQuery: (query: { name: string }, queryArgs: unknown) => this.runQuery(query.name, queryArgs),
+        session,
+        runQuery: (query: { name: string }, queryArgs: unknown) => this.runQuery(query.name, queryArgs, session),
         runMutation: async (mutation: { name: string }, mutationArgs: unknown) =>
-          (await this.mutate({ name: mutation.name, args: mutationArgs, mutationId: randomUUID() })).result,
+          (await this.mutate({ name: mutation.name, args: mutationArgs, mutationId: randomUUID() }, session)).result,
         invalidate: createInvalidate((invalidation) => this.invalidate(invalidation)),
       },
       args,
@@ -487,7 +520,7 @@ export class Engine {
             new: change.new && rowToCamel(change.new),
             old: change.old && rowToCamel(change.old),
           } as any
-          this.#inTransaction(async (ctx) => effect.handler(ctx, event))
+          this.#inTransaction("system", async (ctx) => effect.handler(ctx, event))
             .then(({ invalidations }) => invalidations.forEach((invalidation) => this.invalidate(invalidation)))
             .catch((error) => console.error(`[lyn] effect ${effect.name} failed:`, error))
         }

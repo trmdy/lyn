@@ -6,7 +6,7 @@ export interface Executor {
   query(text: string, params?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>
 }
 
-export interface Session {
+export interface DbSession {
   exec: Executor
   deps: Dep[]
   readOnly: boolean
@@ -55,10 +55,10 @@ interface QueryState {
 }
 
 class TableQuery {
-  #session: Session
+  #session: DbSession
   #state: QueryState
 
-  constructor(session: Session, state: QueryState) {
+  constructor(session: DbSession, state: QueryState) {
     this.#session = session
     this.#state = state
   }
@@ -153,7 +153,7 @@ export function tablesIn(sql: string): string[] {
   return [...new Set([...sql.matchAll(TABLE_REFERENCE)].map((match) => match[1]!.toLowerCase()))]
 }
 
-export function createDb(session: Session): WriteDb {
+export function createDb(session: DbSession): WriteDb {
   const sql: SqlTag = async (strings, ...values) => {
     const text = strings.reduce((acc, part, i) => acc + `$${i}` + part)
     for (const table of tablesIn(text)) session.deps.push({ table })

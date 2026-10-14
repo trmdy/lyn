@@ -14,7 +14,10 @@ export const all = query({
 
 export const create = mutation({
   args: z.object({ id: z.uuid(), name: z.string().trim().min(1) }),
-  handler: ({ db }, list) => db.lists.insert(list),
+  handler: ({ db, session }, list) => {
+    if (!session) throw new Error("Sign in to create lists")
+    return db.lists.insert({ ...list, ownerId: session.userId })
+  },
 })
 
 export const remove = mutation({

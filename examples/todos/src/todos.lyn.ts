@@ -26,6 +26,8 @@ export const logCompleted = effect({
   table: "todos",
   on: ["update"],
   handler: async ({ db }, change) => {
-    if (change.new?.done && change.old?.done === false) await db.activity.insert({ message: `Completed “${change.new.text}”` })
+    if (!change.new?.done || change.old?.done !== false) return
+    const list = await db.lists.where({ id: change.new.listId }).first()
+    if (list) await db.activity.insert({ userId: list.ownerId, message: `Completed “${change.new.text}”` })
   },
 })

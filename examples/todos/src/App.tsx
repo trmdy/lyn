@@ -1,14 +1,65 @@
 import { Suspense, useState, useTransition, type FormEvent } from "react"
-import { live, useAction, useMutation, useQuery } from "lyn"
+import { live, useAction, useLyn, useMutation, useQuery } from "lyn"
 import * as activity from "./activity.lyn"
 import * as lists from "./lists.lyn"
 import * as todos from "./todos.lyn"
+import * as users from "./users.lyn"
+
+const timeFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" })
 
 function selectedFromUrl(url: string) {
   return new URL(url, "http://lyn").searchParams.get("list")
 }
 
 export default function App({ url }: { url: string }) {
+  const me = useQuery(users.me)
+  if (!me) return <SignIn />
+  return <Workspace url={url} />
+}
+
+function useSignIn() {
+  const client = useLyn()
+  return async (userId: string | null) => {
+    await fetch(userId ? "/login" : "/logout", { method: "POST", body: JSON.stringify({ userId }) })
+    client.reconnect()
+  }
+}
+
+function SignIn() {
+  const everyone = useQuery(users.all)
+  const signIn = useSignIn()
+  return (
+    <div className="sign-in">
+      <h1>Lyn todos</h1>
+      <p className="muted">Sign in as</p>
+      {everyone.map((user) => (
+        <button key={user.id} onClick={() => signIn(user.id)}>
+          {user.name}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Account() {
+  const me = useQuery(users.me)
+  const everyone = useQuery(users.all)
+  const signIn = useSignIn()
+  return (
+    <div className="account">
+      <select aria-label="Signed in as" value={me?.id} onChange={(event) => signIn(event.target.value)}>
+        {everyone.map((user) => (
+          <option key={user.id} value={user.id}>
+            {user.name}
+          </option>
+        ))}
+      </select>
+      <button onClick={() => signIn(null)}>Sign out</button>
+    </div>
+  )
+}
+
+function Workspace({ url }: { url: string }) {
   const allLists = useQuery(lists.all)
   const [selected, setSelected] = useState(() => selectedFromUrl(url))
   const [, startTransition] = useTransition()
@@ -23,6 +74,7 @@ export default function App({ url }: { url: string }) {
     <div className="app">
       <aside>
         <h1>Lyn todos</h1>
+        <Account />
         <Lists selected={listId} onSelect={select} />
         <Activity />
       </aside>
@@ -159,7 +211,10 @@ function Activity() {
         <ul>
           {recent.map((entry) => (
             <li key={entry.id}>
-              {entry.message} <time className="muted">{entry.createdAt.toLocaleTimeString()}</time>
+              {entry.message}{" "}
+              <time className="muted" dateTime={entry.createdAt.toISOString()} suppressHydrationWarning>
+                {timeFormat.format(entry.createdAt)}
+              </time>
             </li>
           ))}
         </ul>
