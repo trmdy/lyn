@@ -1,5 +1,5 @@
 import { Suspense, useState, useTransition, type FormEvent } from "react"
-import { live, useAction, useLyn, useMutation, useQuery } from "@lyn/react"
+import { live, useAction, useLyn, useMutation, useQuery, uuid } from "@lyn/react"
 import { and, eq } from "drizzle-orm"
 import { db } from "./db"
 import { lists as listsTable, todos as todosTable } from "./db/schema"
@@ -108,7 +108,7 @@ function Lists({ selected, onSelect }: { selected: string | null; onSelect: (id:
     event.preventDefault()
     const input = event.currentTarget.elements.namedItem("name") as HTMLInputElement
     if (!input.value.trim()) return
-    const id = crypto.randomUUID()
+    const id = uuid()
     create({ id, name: input.value })
     input.value = ""
     onSelect(id)
@@ -176,7 +176,7 @@ function Todos({ listId }: { listId: string }) {
     event.preventDefault()
     const input = event.currentTarget.elements.namedItem("text") as HTMLInputElement
     if (!input.value.trim()) return
-    add({ id: crypto.randomUUID(), listId, text: input.value })
+    add({ id: uuid(), listId, text: input.value })
     input.value = ""
   }
 

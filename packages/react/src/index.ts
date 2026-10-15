@@ -15,7 +15,7 @@ import type { ActionRef, MutationRef, QueryCtx, QueryRef } from "@lyn/core"
 import { registry } from "@lyn/core/registry"
 import { LynClient, type OptimisticUpdate } from "./client.ts"
 
-export { LynClient, type OptimisticStore, type OptimisticUpdate } from "./client.ts"
+export { LynClient, uuid, type OptimisticStore, type OptimisticUpdate } from "./client.ts"
 
 const LynContext = createContext<LynClient | null>(null)
 
@@ -90,11 +90,16 @@ export function live(loaderOrId: unknown, Component: ComponentType<any>, compile
 declare global {
   interface Window {
     __LYN_STATE__?: string
+    __LYN_BASE__?: string
   }
 }
 
-export function hydrate(App: ComponentType<{ url: string }>, container: Element = document.getElementById("root")!) {
-  const client = new LynClient({ initial: window.__LYN_STATE__ })
+export function hydrate(
+  App: ComponentType<{ url: string }>,
+  options: { container?: Element; baseUrl?: string } = {},
+) {
+  const container = options.container ?? document.getElementById("root")!
+  const client = new LynClient({ initial: window.__LYN_STATE__, baseUrl: options.baseUrl ?? window.__LYN_BASE__ ?? "" })
   hydrateRoot(container, createElement(LynProvider, { client }, createElement(App, { url: location.pathname + location.search })))
   return client
 }

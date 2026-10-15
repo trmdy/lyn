@@ -90,7 +90,11 @@ export function lyn(options: LynOptions) {
     const path = url.pathname + url.search
     const session = await sessionOf(c)
     const [page, html] = await Promise.all([
-      renderPage(options.app, { url: path, runQuery: (name, args) => engine.runQuery(name, args, session) }),
+      renderPage(options.app, {
+        url: path,
+        baseUrl: c.req.routePath.replace(/\/?\*$/, ""),
+        runQuery: (name, args) => engine.runQuery(name, args, session),
+      }),
       template(path),
     ])
     c.header("cache-control", "private, no-store")

@@ -34,28 +34,183 @@ function walk(node: unknown, visit: (node: AstNode) => boolean | void) {
 }
 
 function serverModule(code: string, file: string, moduleId: string, ssr: boolean) {
-  const { module } = parseSync(file, code)
-  const exports = module.staticExports
-    .flatMap((statement) => statement.entries)
-    .filter((entry) => !entry.isType && !entry.moduleRequest && entry.exportName.kind === "Name" && entry.localName.name)
+  const { module, program } = parseSync(file, code)
+  const entries = module.staticExports.flatMap((statement) => statement.entries).filter((entry) => !entry.isType)
+  const reexport = entries.find((entry) => entry.moduleRequest)
+  if (reexport)
+    throw new Error(
+      `lyn: ${file} re-exports from "${reexport.moduleRequest!.value}". Server functions must be defined in the *.lyn.ts module that exports them.`,
+    )
+  const named = entries
+    .filter((entry) => entry.exportName.kind === "Name" && entry.localName.name)
     .map((entry) => ({ exported: entry.exportName.name!, local: entry.localName.name! }))
+  const defaultExport = (program.body as unknown as AstNode[]).find((node) => node.type === "ExportDefaultDeclaration")
 
   if (!ssr)
-    return exports
-      .map(({ exported }) => `export const ${exported} = { name: ${JSON.stringify(`${moduleId}:${exported}`)} };`)
-      .join("\n")
+    return [
+      ...named.map(({ exported }) => `export const ${exported} = { name: ${JSON.stringify(`${moduleId}:${exported}`)} };`),
+      ...(defaultExport ? [`export default { name: ${JSON.stringify(`${moduleId}:default`)} };`] : []),
+    ].join("\n")
 
-  const registrations = exports.map(({ exported, local }) => `${JSON.stringify(exported)}: ${local}`).join(", ")
-  return `${code}\nimport { __register as __lynRegister } from "@lyn/core";\n__lynRegister(${JSON.stringify(moduleId)}, { ${registrations} });\n`
+  const output = new MagicString(code)
+  const registrations = named.map(({ exported, local }) => `${JSON.stringify(exported)}: ${local}`)
+  if (defaultExport) {
+    const declaration = defaultExport.declaration as AstNode
+    if (declaration.id?.name) registrations.push(`"default": ${declaration.id.name}`)
+    else {
+      output.overwrite(defaultExport.start, declaration.start, "const __lynDefault = ")
+      output.append("\nexport default __lynDefault;")
+      registrations.push(`"default": __lynDefault`)
+    }
+  }
+  output.append(
+    `\nimport { __register as __lynRegister } from "@lyn/core";\n__lynRegister(${JSON.stringify(moduleId)}, { ${registrations.join(", ")} });\n`,
+  )
+  return output.toString()
+}
+
+function bindingNames(pattern: AstNode | null | undefined, into: string[] = []): string[] {
+  if (!pattern) return into
+  if (pattern.type === "Identifier") into.push(pattern.name)
+  else if (pattern.type === "ObjectPattern")
+    for (const property of pattern.properties as AstNode[]) bindingNames(property.type === "RestElement" ? property.argument : property.value, into)
+  else if (pattern.type === "ArrayPattern") for (const element of pattern.elements as AstNode[]) bindingNames(element, into)
+  else if (pattern.type === "AssignmentPattern") bindingNames(pattern.left, into)
+  else if (pattern.type === "RestElement") bindingNames(pattern.argument, into)
+  else if (pattern.type === "TSParameterProperty") bindingNames(pattern.parameter, into)
+  return into
+}
+
+function declaredIn(statements: AstNode[] = []): string[] {
+  return statements.flatMap((statement) => {
+    const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? statement.declaration : statement
+    if (!node) return []
+    if (node.type === "VariableDeclaration") return (node.declarations as AstNode[]).flatMap((declarator) => bindingNames(declarator.id))
+    if ((node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") && node.id) return [node.id.name]
+    return []
+  })
+}
+
+function moduleReferences(program: AstNode, skip: (node: AstNode) => boolean): Set<string> {
+  const used = new Set<string>()
+  const scopes: Set<string>[] = []
+  const reference = (name: string) => {
+    if (!scopes.some((scope) => scope.has(name))) used.add(name)
+  }
+  const inScope = (names: string[], body: () => void) => {
+    scopes.push(new Set(names))
+    body()
+    scopes.pop()
+  }
+  const visitPattern = (pattern: AstNode | null | undefined): void => {
+    if (!pattern) return
+    if (pattern.type === "AssignmentPattern") {
+      visitPattern(pattern.left)
+      visit(pattern.right)
+    } else if (pattern.type === "ObjectPattern")
+      for (const property of pattern.properties as AstNode[]) {
+        if (property.type === "RestElement") visitPattern(property.argument)
+        else {
+          if (property.computed) visit(property.key)
+          visitPattern(property.value)
+        }
+      }
+    else if (pattern.type === "ArrayPattern") (pattern.elements as AstNode[]).forEach(visitPattern)
+    else if (pattern.type === "RestElement") visitPattern(pattern.argument)
+    else if (pattern.type === "TSParameterProperty") visitPattern(pattern.parameter)
+    else if (pattern.type !== "Identifier") visit(pattern)
+  }
+  const visitJsxName = (name: AstNode): void => {
+    if (name.type === "JSXIdentifier") reference(name.name)
+    else if (name.type === "JSXMemberExpression") visitJsxName(name.object)
+  }
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit)
+    if (!node || typeof node !== "object") return
+    const current = node as AstNode
+    if (typeof current.type !== "string" || skip(current)) return
+    switch (current.type) {
+      case "ImportDeclaration":
+      case "BreakStatement":
+      case "ContinueStatement":
+        return
+      case "Identifier":
+        return reference(current.name)
+      case "JSXOpeningElement":
+        if (current.name.type !== "JSXIdentifier" || /^[A-Z_$]/.test(current.name.name)) visitJsxName(current.name)
+        return visit(current.attributes)
+      case "JSXClosingElement":
+        return
+      case "JSXAttribute":
+        return visit(current.value)
+      case "MemberExpression":
+        visit(current.object)
+        if (current.computed) visit(current.property)
+        return
+      case "Property":
+      case "MethodDefinition":
+      case "PropertyDefinition":
+      case "AccessorProperty":
+        if (current.computed) visit(current.key)
+        return visit(current.value)
+      case "LabeledStatement":
+        return visit(current.body)
+      case "VariableDeclarator":
+        visitPattern(current.id)
+        return visit(current.init)
+      case "ExportNamedDeclaration":
+        if (current.source) return
+        visit(current.declaration)
+        return (current.specifiers as AstNode[]).forEach((specifier) => visit(specifier.local))
+      case "FunctionDeclaration":
+      case "FunctionExpression":
+      case "ArrowFunctionExpression": {
+        const body = current.body as AstNode | null
+        const names = [
+          ...(current.params as AstNode[]).flatMap((param) => bindingNames(param)),
+          ...(current.type === "FunctionExpression" && current.id ? [current.id.name] : []),
+          ...(body?.type === "BlockStatement" ? declaredIn(body.body) : []),
+        ]
+        return inScope(names, () => {
+          ;(current.params as AstNode[]).forEach(visitPattern)
+          if (body?.type === "BlockStatement") visit(body.body)
+          else visit(body)
+        })
+      }
+      case "ClassDeclaration":
+      case "ClassExpression":
+        visit(current.superClass)
+        return visit(current.body)
+      case "BlockStatement":
+      case "StaticBlock":
+        return inScope(declaredIn(current.body), () => visit(current.body))
+      case "CatchClause":
+        return inScope(bindingNames(current.param), () => visit(current.body))
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement": {
+        const head = (current.init ?? current.left) as AstNode | null
+        const names = head?.type === "VariableDeclaration" ? declaredIn([head]) : []
+        return inScope(names, () => {
+          for (const [key, value] of Object.entries(current)) if (key !== "type") visit(value)
+        })
+      }
+      case "SwitchStatement":
+        visit(current.discriminant)
+        return inScope(
+          (current.cases as AstNode[]).flatMap((switchCase) => declaredIn(switchCase.consequent)),
+          () => visit(current.cases),
+        )
+      default:
+        for (const [key, value] of Object.entries(current)) if (key !== "type" && value && typeof value === "object") visit(value)
+    }
+  }
+  visit(program.body)
+  return used
 }
 
 function pruneUnusedImports(code: string, program: AstNode, output: MagicString, removed: AstNode[]) {
-  const isRemoved = (node: AstNode) => removed.some((range) => node.start >= range.start && node.end <= range.end)
-  const used = new Set<string>()
-  walk(program, (node) => {
-    if (node.type === "ImportDeclaration" || isRemoved(node)) return false
-    if (node.type === "Identifier" || node.type === "JSXIdentifier") used.add(node.name)
-  })
+  const used = moduleReferences(program, (node) => removed.includes(node))
   for (const node of program.body as AstNode[]) {
     if (node.type !== "ImportDeclaration" || node.importKind === "type" || !node.specifiers?.length) continue
     const kept = (node.specifiers as AstNode[]).filter((specifier) => used.has(specifier.local.name))
@@ -67,28 +222,42 @@ function pruneUnusedImports(code: string, program: AstNode, output: MagicString,
     const parts: string[] = []
     const defaultImport = kept.find((specifier) => specifier.type === "ImportDefaultSpecifier")
     const namespaceImport = kept.find((specifier) => specifier.type === "ImportNamespaceSpecifier")
-    const named = kept.filter((specifier) => specifier.type === "ImportSpecifier")
+    const namedImports = kept.filter((specifier) => specifier.type === "ImportSpecifier")
     if (defaultImport) parts.push(defaultImport.local.name)
     if (namespaceImport) parts.push(code.slice(namespaceImport.start, namespaceImport.end))
-    if (named.length) parts.push(`{ ${named.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }`)
+    if (namedImports.length) parts.push(`{ ${namedImports.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }`)
     output.overwrite(node.start, node.end, `import ${parts.join(", ")} from ${code.slice(node.source.start, node.source.end)};`)
   }
 }
 
+const INLINE_FUNCTION = new Set(["ArrowFunctionExpression", "FunctionExpression"])
+
 function liveCalls(code: string, file: string, moduleId: string, ssr: boolean) {
   const { module, program } = parseSync(file, code)
-  const liveName = module.staticImports
-    .filter((statement) => statement.moduleRequest.value === "@lyn/react")
-    .flatMap((statement) => statement.entries)
-    .find((entry) => entry.importName.kind === "Name" && entry.importName.name === "live")?.localName.value
-  if (!liveName) return null
+  const entries = module.staticImports.filter((statement) => statement.moduleRequest.value === "@lyn/react").flatMap((statement) => statement.entries)
+  const liveNames = new Set(
+    entries.filter((entry) => entry.importName.kind === "Name" && entry.importName.name === "live").map((entry) => entry.localName.value),
+  )
+  const namespaces = new Set(entries.filter((entry) => entry.importName.kind === "NamespaceObject").map((entry) => entry.localName.value))
+  if (!liveNames.size && !namespaces.size) return null
+  const isLive = (callee: AstNode) =>
+    (callee.type === "Identifier" && liveNames.has(callee.name)) ||
+    (callee.type === "MemberExpression" &&
+      !callee.computed &&
+      callee.object.type === "Identifier" &&
+      namespaces.has(callee.object.name) &&
+      callee.property.name === "live")
 
   const output = new MagicString(code)
   const loaders: AstNode[] = []
   walk(program, (node) => {
-    if (node.type !== "CallExpression" || node.callee.type !== "Identifier" || node.callee.name !== liveName) return
+    if (node.type !== "CallExpression" || !isLive(node.callee)) return
     const [loader, component] = node.arguments as AstNode[]
     if (!loader || !component) return
+    if (!INLINE_FUNCTION.has(loader.type))
+      throw new Error(
+        `lyn: ${file}: pass the live() loader inline as a function so its server code can be removed from the browser bundle.`,
+      )
     const id = JSON.stringify(`${moduleId}#${loaders.length}`)
     loaders.push(loader)
     if (ssr) output.appendLeft(component.end, `, ${id}`)
@@ -139,7 +308,7 @@ export function lyn(options: LynPluginOptions = {}): Plugin {
     },
     async load(id) {
       if (id === "\0" + MODULES_ID)
-        return `export default import.meta.glob(["/**/*.lyn.{ts,tsx,js,jsx}", "!**/node_modules/**", "!/dist/**"], { eager: true })`
+        return `export default import.meta.glob(["/**/*.lyn.{ts,tsx,mts,cts,js,jsx,mjs,cjs}", "!**/node_modules/**", "!/dist/**"], { eager: true })`
       if (id === "\0" + SERVER_ENTRY_ID)
         return [
           `import ${JSON.stringify(MODULES_ID)}`,

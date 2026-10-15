@@ -72,7 +72,7 @@ const items = useQuery(todos.list, { listId })
 const toggle = useMutation(todos.toggle, { optimistic: (store, args) => ... })
 ```
 
-Or a component can load its data next to its definition. The loader runs on the server, and its imports are removed from the browser bundle.
+Or a component can load its data next to its definition. The loader runs on the server, and its imports are removed from the browser bundle. Pass the loader inline as a function; anything else fails the build so server code can't leak.
 
 ```tsx
 const ListHeader = live(
@@ -92,6 +92,9 @@ Beyond these, Lyn has:
 - `action()`, for side effects
 - `ctx.depends(tag)` with `invalidate.tag(tag)`, for data outside the database
 - `LynError`, for messages that are safe to show users
+- `uuid()` from `@lyn/react`, which also works where `crypto.randomUUID` is unavailable (plain HTTP on a local network)
+
+`*.lyn.ts` modules may use named and default exports. Re-exporting from another module fails the build. Lyn can be mounted under a path (`app.route("/app", lyn(...))`); the client picks up the base path from the server-rendered page. If the event stream drops, the client reconnects with backoff and resubscribes.
 
 ## Packages
 

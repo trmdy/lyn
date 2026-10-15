@@ -2,6 +2,15 @@ import { applyRows, decode, encode, queryKey, type ServerFrame } from "@lyn/core
 
 type Ref = { name: string }
 
+export function uuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export interface OptimisticStore {
   get<R>(query: Ref & { __types?: { result: R } }, args?: unknown): Awaited<R> | undefined
   set<R>(query: Ref & { __types?: { result: R } }, args: unknown, value: Awaited<R>): void
@@ -52,6 +61,8 @@ export class LynClient {
   #outgoingScheduled = false
   #resync?: { keys: Set<string>; mutations: Set<string> }
   #source?: EventSource
+  #reconnectDelay = 0
+  #reconnectTimer?: ReturnType<typeof setTimeout>
 
   constructor(options: LynClientOptions = {}) {
     this.#fetchQuery = options.fetchQuery
@@ -85,7 +96,7 @@ export class LynClient {
   }
 
   async mutate<A, R>(name: string, args: A, optimistic?: OptimisticUpdate<A>): Promise<R> {
-    const pending: PendingMutation = { id: crypto.randomUUID(), args, optimistic, responded: false }
+    const pending: PendingMutation = { id: uuid(), args, optimistic, responded: false }
     this.#pending.push(pending)
     if (optimistic) this.#recompute()
     try {
@@ -194,6 +205,7 @@ export class LynClient {
   }
 
   reconnect() {
+    clearTimeout(this.#reconnectTimer)
     this.#source?.close()
     this.#connect()
   }
@@ -201,11 +213,17 @@ export class LynClient {
   #connect() {
     const source = new EventSource(`${this.#baseUrl}/_lyn/events`)
     this.#source = source
+    source.addEventListener("error", () => {
+      if (source.readyState !== EventSource.CLOSED || this.#source !== source) return
+      this.#reconnectDelay = Math.min(30_000, this.#reconnectDelay * 2 || 1_000)
+      this.#reconnectTimer = setTimeout(() => this.reconnect(), this.#reconnectDelay)
+    })
     source.addEventListener("hello", (event) => this.#onHello(JSON.parse((event as MessageEvent).data).clientId))
     source.addEventListener("frame", (event) => this.#onFrame(decode<ServerFrame>((event as MessageEvent).data)))
   }
 
   #onHello(clientId: string) {
+    this.#reconnectDelay = 0
     const reconnect = this.#clientId !== undefined
     this.#clientId = clientId
     this.#bySub.clear()
