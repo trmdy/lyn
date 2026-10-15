@@ -8,7 +8,8 @@
     "build": "pnpm --filter todos build",
     "start": "pnpm --filter todos start",
     "typecheck": "pnpm -r typecheck",
-    "fuzz": "pnpm --filter @lyn/postgres fuzz"
+    "fuzz": "pnpm --filter @lyn/postgres fuzz",
+    "bench": "pnpm --filter @lyn/postgres bench"
   },
   "packageManager": "pnpm@10.28.0"
 }

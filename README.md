@@ -114,6 +114,7 @@ Beyond these, Lyn has:
   - Value comparisons are deliberately loose (`1.5` matches `"1.50"`), so a mismatch can only cause an extra re-run, never a missed update.
 - **Row-level security.** Each query and mutation runs with `lyn.session` set and, if you give it, a database role. Postgres row-level security policies then filter live data per user.
 - **Consistency.** Lyn re-runs queries in a snapshot that includes the commit. Optimistic updates are dropped only after the patches caused by that mutation have arrived.
+- **No head-of-line blocking.** Each live query runs on its own schedule, so a slow query only delays itself. With a 300 ms query in the mix, unrelated updates still arrive in about 1 ms, and 1,000 queries invalidated by one write finish in under 50 ms (`pnpm bench`).
 - **Hot data reload.** In dev, editing a `*.lyn.ts` file re-runs the affected live queries in open browsers.
 - **Production.** Browser code that imports server-only packages fails the build. In production, error details are masked unless the error was thrown as a `LynError`. Effects run on one elected instance.
 

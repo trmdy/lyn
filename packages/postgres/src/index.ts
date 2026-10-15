@@ -12,6 +12,7 @@ export interface PostgresOptions {
   role?: string
   publication?: string
   max?: number
+  readers?: number
 }
 
 interface Scope {
@@ -128,6 +129,7 @@ export class PostgresAdapter implements Adapter {
   readonly #publication: string
   #catalog: Catalog = buildCatalog({ tables: [], views: [], policies: [], functions: [] })
   #catalogTimer?: ReturnType<typeof setInterval>
+  readonly #readers: number
   readonly #warned = new Set<string>()
   #replication?: LogicalReplicationService
   #open?: { xid: number; lsn: string; changes: Change[] }
@@ -139,6 +141,7 @@ export class PostgresAdapter implements Adapter {
   constructor(options: PostgresOptions) {
     this.#options = options
     this.#publication = options.publication ?? "lyn"
+    this.#readers = options.readers ?? 4
     this.id = `postgres:${options.url}#role=${options.role ?? ""}&publication=${this.#publication}`
     this.pool = new LynPool({ connectionString: options.url, max: options.max ?? 20 })
     this.pool.adapterId = this.id
@@ -188,18 +191,50 @@ export class PostgresAdapter implements Adapter {
 
   async snapshot<T>(after: ChangeBatch[], run: (read: Reader) => Promise<T>): Promise<T> {
     const xids = after.flatMap((batch) => batch.tokens).map(Number)
-    const client = await this.pool.connectDirect()
+    const leader = await this.pool.connectDirect()
+    const clients = [leader]
+    const idle: pg.PoolClient[] = []
+    const waiting: ((client: pg.PoolClient) => void)[] = []
+    let exported: Promise<string> | undefined
+    let opening = 0
     try {
       const deadline = Date.now() + 10_000
       for (let attempt = 0; ; attempt++) {
-        await client.query("begin isolation level repeatable read read only")
-        const { rows } = await client.query("select pg_current_snapshot()::text as snapshot")
+        await leader.query("begin isolation level repeatable read read only")
+        const { rows } = await leader.query("select pg_current_snapshot()::text as snapshot")
         if (xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) break
-        await client.query("rollback")
+        await leader.query("rollback")
         if (Date.now() > deadline) throw new Error(`lyn: committed transactions ${xids.join(", ")} never became visible`)
         await sleep(Math.min(50, 1 + attempt))
       }
+      idle.push(leader)
+
+      const canGrow = () =>
+        clients.length + opening < this.#readers && (this.pool.idleCount > 0 || this.pool.totalCount < (this.#options.max ?? 20))
+      const acquire = async (): Promise<pg.PoolClient> => {
+        const free = idle.pop()
+        if (free) return free
+        if (!canGrow()) return new Promise((resolve) => waiting.push(resolve))
+        opening++
+        try {
+          exported ??= leader.query("select pg_export_snapshot() as id").then((result) => result.rows[0].id as string)
+          const id = await exported
+          const client = await this.pool.connectDirect()
+          clients.push(client)
+          await client.query(`begin isolation level repeatable read read only; set transaction snapshot ${client.escapeLiteral(id)}`)
+          return client
+        } finally {
+          opening--
+        }
+      }
+      const release = (client: pg.PoolClient) => {
+        const next = waiting.shift()
+        if (next) next(client)
+        else idle.push(client)
+      }
+
       const read: Reader = async (context, task) => {
+        const client = await acquire()
         const current: Scope = {
           adapterId: this.id,
           client,
@@ -208,9 +243,8 @@ export class PostgresAdapter implements Adapter {
           tail: Promise.resolve(),
           savepoints: 0,
         }
-        await client.query("savepoint lyn_read")
         try {
-          await this.#applyContext(client, context)
+          await client.query(`savepoint lyn_read; ${this.#contextSql(client, context)}`)
           const value = await scope.run(current, task)
           await current.tail
           await client.query("release savepoint lyn_read")
@@ -218,23 +252,25 @@ export class PostgresAdapter implements Adapter {
         } catch (error) {
           await client.query("rollback to savepoint lyn_read").catch(() => {})
           return { ok: false, error, reads: current.reads }
+        } finally {
+          release(client)
         }
       }
-      try {
-        return await run(read)
-      } finally {
-        await client.query("commit").catch(() => {})
-      }
+      return await run(read)
     } finally {
-      client.release()
+      await Promise.all(
+        clients.map(async (client) => {
+          await client.query("commit").catch(() => {})
+          client.release()
+        }),
+      )
     }
   }
 
   async write<T>(context: ExecutionContext, run: () => Promise<T>, beforeCommit?: (token: string) => void) {
     const client = await this.pool.connectDirect()
     try {
-      await client.query("begin")
-      await this.#applyContext(client, context)
+      await client.query(`begin; ${this.#contextSql(client, context)}`)
       const current: Scope = { adapterId: this.id, client, reads: null, catalog: this.#catalog, tail: Promise.resolve(), savepoints: 0 }
       const value = await scope.run(current, run)
       await current.tail
@@ -254,10 +290,10 @@ export class PostgresAdapter implements Adapter {
     }
   }
 
-  async #applyContext(client: pg.PoolClient, context: ExecutionContext) {
+  #contextSql(client: pg.PoolClient, context: ExecutionContext) {
     const session = context.system || !context.session ? "" : JSON.stringify(context.session)
     const role = context.system ? "none" : (this.#options.role ?? "none")
-    await client.query("select set_config('lyn.session', $1, true), set_config('role', $2, true)", [session, role])
+    return `select set_config('lyn.session', ${client.escapeLiteral(session)}, true), set_config('role', ${client.escapeLiteral(role)}, true)`
   }
 
   async refreshCatalog() {

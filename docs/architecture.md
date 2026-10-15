@@ -20,7 +20,7 @@ GET /anything-else ──────▶ SSR: render App with data, embed state
 | Method | Responsibility |
 | --- | --- |
 | `start(onChanges)` / `stop()` | Open the change feed; deliver committed changes in commit order as `ChangeBatch`es. |
-| `snapshot(after, run)` | Give `run` a reader that executes handlers against one consistent state that includes every batch in `after`. |
+| `snapshot(after, run)` | Give `run` a reader that executes handlers against one consistent state that includes every batch in `after`. The reader must be safe to call concurrently. |
 | `write(context, run)` | Run a mutation in a transaction; return a write token that will appear in the batch containing its commit. |
 | `affects(reads, batch)` | Decide whether a batch can change the result of a query that recorded `reads`. Must never return a false negative. |
 | `isLeader()` | Whether this instance should run effects (elected across instances). |
@@ -36,7 +36,18 @@ A `context` carries the session (or marks a system call for effects). Adapters a
 - **Isolation.** A pool only serves the adapter it belongs to; querying another Lyn database inside a handler throws. Engines are shared per URL, role and publication.
 - **Settling.** Every mutation that writes emits a transactional logical message, so its commit always appears in the change stream, even when savepoint rollbacks leave no row changes.
 - **Change feed.** Logical replication (`pgoutput`) over a temporary slot that disappears with the process.
-- **Consistency.** Re-runs happen in a repeatable-read snapshot verified to include the batch's transactions. Mutations report their transaction id; core sends `settled` after the patches it caused.
+- **Consistency.** Re-runs happen in a repeatable-read snapshot verified to include the batch's transactions. Concurrent reads share that snapshot: extra connections import it with `pg_export_snapshot()` / `SET TRANSACTION SNAPSHOT` (up to `readers`, default 4). Mutations report their transaction id and emit a transactional logical message so even row-less commits reach the change stream.
+
+## Scheduling live queries
+
+Each live query (a "group": one query, arguments and session) runs independently, so a slow query never delays others.
+
+- **Invalidation.** When a change batch arrives, every idle group whose read set it affects is queued. A group that is already running queues every batch, because its read set may change; when the run finishes, the queued batches are checked against the new read set and the group re-runs once if any match.
+- **Waves.** Groups queued in the same tick run together in one snapshot (concurrently, through the adapter's reader) and each delivers its result as soon as it finishes. Updates are coalesced per connection into one SSE frame per tick.
+- **Settling.** A mutation settles once every query its connection subscribes to that the commit affected has a result that includes it. Until then, that connection's updates for those queries are held back, then released together with `settled` in one frame, so optimistic updates never double up or flicker. Other connections and other queries are not held.
+- **Failure.** A failed snapshot re-queues its groups with backoff; a failed query matches every change until it recovers.
+
+`pnpm bench` measures this: fan-out to many queries, a fast query next to a slow one, and subscribing while slow queries run.
 
 ## Client
 

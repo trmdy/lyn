@@ -44,6 +44,7 @@ const SCHEMA = `
   drop function if exists fuzz_double(int);
   drop function if exists flagged_in(int);
   drop function if exists flagged_plpgsql(int);
+  drop function if exists fuzz_sleep(int);
   create table groups (id int primary key, name text not null);
   create table items (id int primary key, grp int not null, flag boolean not null default false, val int not null default 0, tag text, price numeric(6,2) not null default 0);
   create table items_default (id int primary key, grp int not null, val int not null default 0);
@@ -60,6 +61,7 @@ const SCHEMA = `
   create view flagged as select * from items where flag;
   create function fuzz_double(int) returns int language sql immutable as $$ select $1 * 2 $$;
   create function flagged_in(g int) returns int language sql stable as $$ select count(*)::int from items where grp = g and flag $$;
+  create function fuzz_sleep(ms int) returns boolean language sql volatile as $$ select true from pg_sleep(ms / 1000.0) $$;
   create function flagged_plpgsql(g int) returns int language plpgsql stable as $$ begin return (select count(*) from items where grp = g and flag); end $$;
   insert into barrier values (1, 0);
   do $$ begin
@@ -78,9 +80,13 @@ const SCHEMA = `
     with check (owner = (nullif(current_setting('lyn.session', true), '')::jsonb ->> 'owner')::int);
 `
 
+type Run = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>
+
 interface QuerySpec {
   sql: string
   args: () => unknown[]
+  run?: (query: Run, args: unknown[]) => Promise<unknown>
+  expectedArgs?: (args: unknown[]) => unknown[]
 }
 
 const QUERIES: Record<string, QuerySpec> = {
@@ -117,6 +123,25 @@ const QUERIES: Record<string, QuerySpec> = {
   },
   secrets: { sql: `select * from secrets order by id`, args: () => [] },
   secretsByGroup: { sql: `select id, val from secrets where grp = $1 order by id`, args: () => [grp()] },
+  slowByGroup: {
+    sql: `select * from items where grp = $1 and fuzz_sleep($2) order by id`,
+    args: () => [grp(), int(1, 15)],
+    expectedArgs: ([group]) => [group, 0],
+  },
+  slowTotals: {
+    sql: `select grp, sum(val)::int as total from items where fuzz_sleep($1) group by grp order by grp`,
+    args: () => [int(1, 15)],
+    expectedArgs: () => [0],
+  },
+  dependent: {
+    sql: `select * from groups where id = (select grp from items where id = $1) order by id`,
+    args: () => [id(), int(1, 15)],
+    expectedArgs: ([itemId]) => [itemId],
+    run: async (query, [itemId, ms]) => {
+      const [item] = await query("select grp from items where id = $1", [itemId])
+      return item ? query("select * from groups where id = $1 and fuzz_sleep($2) order by id", [item.grp, ms]) : []
+    },
+  },
   owned: { sql: `select * from owned order by id`, args: () => [] },
   ownedByVal: { sql: `select id from owned where val = $1 order by id`, args: () => [val()] },
   drizzleStyle: {
@@ -222,8 +247,9 @@ async function main() {
       }) as Reader),
     )
 
+  const run: Run = async (sql, params) => (await adapter.pool.query(sql, params)).rows
   for (const [name, spec] of Object.entries(QUERIES))
-    __register("fuzz", { [name]: query({ handler: async (_, args: { p: unknown[] }) => (await adapter.pool.query(spec.sql, args.p)).rows }) })
+    __register("fuzz", { [name]: query({ handler: (_, args: { p: unknown[] }) => (spec.run ? spec.run(run, args.p) : run(spec.sql, args.p)) }) })
   __register("fuzz", {
     barrier: query({ handler: async () => (await adapter.pool.query("select n from barrier where id = 1")).rows[0]?.n }),
     exec: mutation({
@@ -312,10 +338,11 @@ async function main() {
     barrierValue++
     await direct.query("update barrier set n = $1 where id = 1", [barrierValue])
     const deadline = Date.now() + 10_000
-    while (clients[0]!.subs.get(barrierSub)!.value !== barrierValue) {
-      if (Date.now() > deadline) throw new Error(`engine did not deliver barrier ${barrierValue} within 10s`)
+    while (clients[0]!.subs.get(barrierSub)!.value !== barrierValue || engine.busy) {
+      if (Date.now() > deadline) throw new Error(`engine did not deliver barrier ${barrierValue} and go idle within 10s`)
       await sleep(2)
     }
+    await sleep(2)
   }
 
   const expected = async (session: Session | null, sql: string, params: unknown[]) => {
@@ -332,7 +359,8 @@ async function main() {
     for (const client of clients)
       for (const [sub, state] of client.subs) {
         if (state.name === "barrier") continue
-        const want = await expected(client.session, QUERIES[state.name]!.sql, state.args)
+        const spec = QUERIES[state.name]!
+        const want = await expected(client.session, spec.sql, spec.expectedArgs ? spec.expectedArgs(state.args) : state.args)
         const actual = seen ? seen.get(subKey(client, sub)) : encode(state.value)
         if (actual !== undefined && encode(want) !== actual)
           failures.push(
@@ -406,6 +434,18 @@ async function main() {
     record("external: truncate items")
     await direct.query("truncate items")
   }
+
+  const probe = clients[0]!
+  await direct.query("insert into items (id, grp) values (150, 1)")
+  await subscribe(probe, "dependent", [150, 300])
+  await barrier()
+  await direct.query("update items set grp = 3 where id = 150")
+  await sleep(100)
+  await direct.query("update groups set name = 'probe' where id = 3")
+  await barrier()
+  await verify("dependent-read probe")
+  await direct.query("delete from items where id = 150")
+  await barrier()
 
   const started = Date.now()
   for (let step = 1; step <= steps && !failures.length; step++) {
