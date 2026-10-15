@@ -39,3 +39,10 @@ A `context` carries the session (or marks a system call for effects). Adapters a
 ## Client
 
 `@lyn/react` keeps one SSE connection per tab, a cache of query entries, and an optimistic layer replayed over server values. All messages from one batch apply in one render.
+
+## Build and runtime
+
+- `lyn dev` runs Vite in middleware mode and loads `virtual:lyn/server-entry` per request, so the Hono app and server modules hot-reload. Editing a `*.lyn.ts` file re-runs open live queries.
+- `virtual:lyn/server-entry` imports every `*.lyn.ts` module (registering them), registers the HTML template with `@lyn/hono`, and re-exports the app's default Hono app.
+- `lyn build` produces `dist/client` and `dist/server/entry.js`. The server bundle contains only app code; every package import stays external and is resolved by Node at runtime.
+- `lyn start` serves `dist/client` (hashed assets cached immutably) in front of the app with `@hono/node-server`. Because the entry exports a plain Hono app, other runtimes can serve it directly.

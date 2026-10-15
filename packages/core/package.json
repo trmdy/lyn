@@ -1,0 +1,19 @@
+{
+  "name": "@lyn/core",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wire": "./src/wire.ts",
+    "./registry": "./src/registry.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "devalue": "^6.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

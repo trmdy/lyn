@@ -11,8 +11,8 @@ import {
   type ReactNode,
 } from "react"
 import { hydrateRoot } from "react-dom/client"
-import type { ActionRef, MutationRef, QueryCtx, QueryRef } from "../server/index.ts"
-import { registry } from "../shared/registry.ts"
+import type { ActionRef, MutationRef, QueryCtx, QueryRef } from "@lyn/core"
+import { registry } from "@lyn/core/registry"
 import { LynClient, type OptimisticUpdate } from "./client.ts"
 
 export { LynClient, type OptimisticStore, type OptimisticUpdate } from "./client.ts"

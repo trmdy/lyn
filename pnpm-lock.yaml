@@ -10,9 +10,24 @@ importers:
 
   examples/todos:
     dependencies:
-      lyn:
+      '@lyn/core':
         specifier: workspace:*
-        version: link:../../packages/lyn
+        version: link:../../packages/core
+      '@lyn/hono':
+        specifier: workspace:*
+        version: link:../../packages/hono
+      '@lyn/postgres':
+        specifier: workspace:*
+        version: link:../../packages/postgres
+      '@lyn/react':
+        specifier: workspace:*
+        version: link:../../packages/react
+      drizzle-orm:
+        specifier: ^0.45.4
+        version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -26,6 +41,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@lyn/vite':
+        specifier: workspace:*
+        version: link:../../packages/vite
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -48,20 +66,46 @@ importers:
         specifier: ^8.3.4
         version: 8.3.4(@types/node@26.6.5)
 
-  packages/lyn:
+  packages/core:
     dependencies:
       devalue:
         specifier: ^6.0.3
         version: 6.0.3
-      es-module-lexer:
-        specifier: ^3.0.3
-        version: 3.0.3
-      magic-string:
-        specifier: ^1.4.3
-        version: 1.4.3
-      oxc-parser:
-        specifier: ^0.154.0
-        version: 0.154.0
+    devDependencies:
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/hono:
+    dependencies:
+      '@lyn/core':
+        specifier: workspace:*
+        version: link:../core
+      '@lyn/react':
+        specifier: workspace:*
+        version: link:../react
+    devDependencies:
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/postgres:
+    dependencies:
+      '@lyn/core':
+        specifier: workspace:*
+        version: link:../core
+      libpg-query:
+        specifier: ^18.1.5
+        version: 18.1.5
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -75,6 +119,16 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/react:
+    dependencies:
+      '@lyn/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -90,14 +144,39 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/vite:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^2.1.5
+        version: 2.1.5(hono@4.13.13)
+      magic-string:
+        specifier: ^1.4.3
+        version: 1.4.3
+      oxc-parser:
+        specifier: ^0.154.0
+        version: 0.154.0
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
       vite:
         specifier: ^8.3.4
         version: 8.3.4(@types/node@26.6.5)
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
 
 packages:
+
+  '@hono/node-server@2.1.5':
+    resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      hono: ^4 || ^5.0.0-0
 
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
@@ -218,6 +297,9 @@ packages:
 
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
+
+  '@pgsql/types@18.0.0':
+    resolution: {integrity: sha512-jtAY4JU7jdVYZ/Vv3zlZqVP+FRWZokyCLKPPCnAApiaJAElpyyiMC3HRiquBu29kSrVs+rkqZD50SUIb/zyEGw==}
 
   '@rolldown/binding-android-arm-eabi@1.2.14':
     resolution: {integrity: sha512-aWR+XKH9+rW7m5fWq/5360J3mHycrx/o6xZM2DQFdJnTMdyP7/WzxPjhtLbVWdKo2y612/4U1bWqb3HQhiF7vg==}
@@ -473,8 +555,100 @@ packages:
     resolution: {integrity: sha512-3woMEITftG1wKeO/4d/QXH1DVKctTSZg3jNGPpjp9hNr5Hos8MCFF5McTML5ZtgKDObm2R591B0spRp2IVernA==}
     engines: {node: '>=18'}
 
-  es-module-lexer@3.0.3:
-    resolution: {integrity: sha512-yWGe1O/j+almnV4hOYrmZo8u58JdnmXEMneRQAYkWtqSiT86yoMIEKF4rpqEDj52tbYl3xceBD3DQIBwcsC9Pw==}
+  drizzle-orm@0.45.4:
+    resolution: {integrity: sha512-NiM1YZpJ2UxyeE67DpDDZ+Tsw4YLX3trSlkNT7Tm9eKoUNb1LvaAaQzXgYQsWs+AQ9TUmmwMmBOCXuqqxUWKKQ==}
+    peerDependencies:
+      '@aws-sdk/client-rds-data': '>=3'
+      '@cloudflare/workers-types': '>=4'
+      '@electric-sql/pglite': '>=0.2.0'
+      '@libsql/client': '>=0.10.0'
+      '@libsql/client-wasm': '>=0.10.0'
+      '@neondatabase/serverless': '>=0.10.0'
+      '@netlify/db': '>=0.4.0'
+      '@op-engineering/op-sqlite': '>=2'
+      '@opentelemetry/api': ^1.4.1
+      '@planetscale/database': '>=1.13'
+      '@prisma/client': '*'
+      '@tidbcloud/serverless': '*'
+      '@types/better-sqlite3': '*'
+      '@types/pg': '*'
+      '@types/sql.js': '*'
+      '@upstash/redis': '>=1.34.7'
+      '@vercel/postgres': '>=0.8.0'
+      '@xata.io/client': '*'
+      better-sqlite3: '>=7'
+      bun-types: '*'
+      expo-sqlite: '>=14.0.0'
+      gel: '>=2'
+      knex: '*'
+      kysely: '*'
+      mysql2: '>=2'
+      pg: '>=8'
+      postgres: '>=3'
+      prisma: '*'
+      sql.js: '>=1'
+      sqlite3: '>=5'
+    peerDependenciesMeta:
+      '@aws-sdk/client-rds-data':
+        optional: true
+      '@cloudflare/workers-types':
+        optional: true
+      '@electric-sql/pglite':
+        optional: true
+      '@libsql/client':
+        optional: true
+      '@libsql/client-wasm':
+        optional: true
+      '@neondatabase/serverless':
+        optional: true
+      '@netlify/db':
+        optional: true
+      '@op-engineering/op-sqlite':
+        optional: true
+      '@opentelemetry/api':
+        optional: true
+      '@planetscale/database':
+        optional: true
+      '@prisma/client':
+        optional: true
+      '@tidbcloud/serverless':
+        optional: true
+      '@types/better-sqlite3':
+        optional: true
+      '@types/pg':
+        optional: true
+      '@types/sql.js':
+        optional: true
+      '@upstash/redis':
+        optional: true
+      '@vercel/postgres':
+        optional: true
+      '@xata.io/client':
+        optional: true
+      better-sqlite3:
+        optional: true
+      bun-types:
+        optional: true
+      expo-sqlite:
+        optional: true
+      gel:
+        optional: true
+      knex:
+        optional: true
+      kysely:
+        optional: true
+      mysql2:
+        optional: true
+      pg:
+        optional: true
+      postgres:
+        optional: true
+      prisma:
+        optional: true
+      sql.js:
+        optional: true
+      sqlite3:
+        optional: true
 
   eventemitter2@6.4.9:
     resolution: {integrity: sha512-JEPTiaOt9f04oa6NOkc4aH+nVp5I3wEjpHbIPqfgCdD5v5bUzy7xQqwcVO2aDQgOWhI28da57HksMrzK9HlRxg==}
@@ -492,6 +666,13 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  hono@4.13.13:
+    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+    engines: {node: '>=16.9.0'}
+
+  libpg-query@18.1.5:
+    resolution: {integrity: sha512-xsksgH106LyVUylIp2bJz1MPFmVVIGKbB8belGWmh+J8/i38w8eM1twDIBnd97tzeNQFctH9MWKMthl22+fWcQ==}
 
   lightningcss-android-arm64@1.33.0:
     resolution: {integrity: sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==}
@@ -729,6 +910,10 @@ packages:
 
 snapshots:
 
+  '@hono/node-server@2.1.5(hono@4.13.13)':
+    dependencies:
+      hono: 4.13.13
+
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
   '@oxc-parser/binding-android-arm-eabi@0.154.0':
@@ -789,6 +974,8 @@ snapshots:
     optional: true
 
   '@oxc-project/types@0.154.0': {}
+
+  '@pgsql/types@18.0.0': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.14':
     optional: true
@@ -926,7 +1113,10 @@ snapshots:
 
   devalue@6.0.3: {}
 
-  es-module-lexer@3.0.3: {}
+  drizzle-orm@0.45.4(@types/pg@8.23.1)(pg@8.23.1):
+    optionalDependencies:
+      '@types/pg': 8.23.1
+      pg: 8.23.1
 
   eventemitter2@6.4.9: {}
 
@@ -936,6 +1126,12 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  hono@4.13.13: {}
+
+  libpg-query@18.1.5:
+    dependencies:
+      '@pgsql/types': 18.0.0
 
   lightningcss-android-arm64@1.33.0:
     optional: true

@@ -1,0 +1,25 @@
+{
+  "name": "@lyn/hono",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "hono": "^4",
+    "react": "^19"
+  },
+  "dependencies": {
+    "@lyn/core": "workspace:*",
+    "@lyn/react": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "hono": "^4.13.13",
+    "react": "^19.3.1",
+    "typescript": "^7.0.2"
+  }
+}

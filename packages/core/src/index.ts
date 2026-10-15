@@ -1,10 +1,25 @@
-import { registry, type Definition } from "../shared/registry.ts"
-import { queryKey } from "../shared/wire.ts"
-import type { ReadDb, Tables, WriteDb } from "./db.ts"
+import { registry, type Definition } from "./registry.ts"
+import { queryKey } from "./wire.ts"
+import type { Change } from "./adapter.ts"
 
-export interface Session {}
+export type { Adapter, Change, ChangeBatch, ExecutionContext, Reader, ReadResult, Row } from "./adapter.ts"
+export { Engine } from "./engine.ts"
 
-export type { ReadDb, ReadQuery, Tables, WriteDb, WriteQuery } from "./db.ts"
+export interface Register {}
+
+export class LynError extends Error {
+  override name = "LynError"
+}
+
+const production = () => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.NODE_ENV === "production"
+
+export function publicMessage(error: unknown) {
+  if (error instanceof Error && error.name === "LynError") return error.message
+  console.error(error)
+  return production() ? "Internal server error" : error instanceof Error ? error.message : String(error)
+}
+
+export type Session = Register extends { session: infer S } ? S : Record<string, unknown>
 
 type ValidationResult<T> =
   | { readonly value: T; readonly issues?: undefined }
@@ -38,47 +53,38 @@ export interface ActionRef<A = any, R = any> {
 
 export type Invalidation =
   | { kind: "tag"; tag: string }
-  | { kind: "table"; table: string }
   | { kind: "query"; key: string }
   | { kind: "all" }
 
 export interface Invalidate {
   <A>(query: QueryRef<A>, args: A): void
   tag(tag: string): void
-  table(table: keyof Tables & string): void
   all(): void
 }
 
 export interface QueryCtx {
-  db: ReadDb
   session: Session | null
   depends(tag: string): void
 }
 
 export interface MutationCtx {
-  db: WriteDb
   session: Session | null
   invalidate: Invalidate
 }
 
 export interface ActionCtx {
   session: Session | null
-  runQuery<A, R>(query: QueryRef<A, R>, args: A): Promise<R>
-  runMutation<A, R>(mutation: MutationRef<A, R>, args: A): Promise<R>
+  runQuery<A, R>(query: QueryRef<A, R>, args: A): Promise<Awaited<R>>
+  runMutation<A, R>(mutation: MutationRef<A, R>, args: A): Promise<Awaited<R>>
   invalidate: Invalidate
 }
-
-export type Change<T> =
-  | { kind: "insert"; new: T; old: undefined }
-  | { kind: "update"; new: T; old: Partial<T> | undefined }
-  | { kind: "delete"; new: undefined; old: Partial<T> | undefined }
 
 export interface EffectDefinition {
   kind: "effect"
   name: string
   table: string
-  on: Change<unknown>["kind"][]
-  handler: (ctx: MutationCtx, change: Change<any>) => unknown
+  on: Change["kind"][]
+  handler: (ctx: MutationCtx, change: Change) => unknown
 }
 
 function define<T>(definition: Omit<Definition, "name">): T {
@@ -106,12 +112,12 @@ export function action<R, A = NoArgs>(definition: {
   return define({ kind: "action", ...definition })
 }
 
-export function effect<T extends keyof Tables & string>(definition: {
-  table: T
-  on?: Change<unknown>["kind"][]
-  handler: (ctx: MutationCtx, change: Change<Tables[T]>) => unknown
+export function effect(definition: {
+  table: string
+  on?: Change["kind"][]
+  handler: (ctx: MutationCtx, change: Change) => unknown
 }): EffectDefinition {
-  return define<EffectDefinition>({ kind: "effect", on: ["insert", "update", "delete"], ...definition } as Omit<Definition, "name">)
+  return define({ kind: "effect", on: ["insert", "update", "delete"], ...definition } as Omit<Definition, "name">)
 }
 
 export function __register(moduleId: string, exports: Record<string, unknown>) {
@@ -123,33 +129,28 @@ export function __register(moduleId: string, exports: Record<string, unknown>) {
   }
 }
 
-export function definitionsOfKind<K extends Definition["kind"]>(kind: K) {
-  return [...registry.values()].filter((definition) => definition.kind === kind)
-}
-
 export async function validate<A>(schema: Schema<A> | undefined, value: unknown): Promise<A> {
   if (!schema) return (value ?? {}) as A
   const result = await schema["~standard"].validate(value)
-  if (result.issues) throw new Error(`Invalid arguments: ${result.issues.map((issue) => issue.message).join("; ")}`)
+  if (result.issues) throw new LynError(`Invalid arguments: ${result.issues.map((issue) => issue.message).join("; ")}`)
   return result.value
 }
-
-type GlobalWithEngine = typeof globalThis & { __lynInvalidate?: (invalidation: Invalidation) => void }
 
 export function createInvalidate(push: (invalidation: Invalidation) => void): Invalidate {
   const invalidate = ((query: QueryRef, args: unknown) => push({ kind: "query", key: queryKey(query.name, args) })) as Invalidate
   invalidate.tag = (tag) => push({ kind: "tag", tag })
-  invalidate.table = (table) => push({ kind: "table", table })
   invalidate.all = () => push({ kind: "all" })
   return invalidate
 }
 
+type GlobalWithInvalidate = typeof globalThis & { __lynInvalidate?: (invalidation: Invalidation) => void }
+
 export function setGlobalInvalidate(push: (invalidation: Invalidation) => void) {
-  ;(globalThis as GlobalWithEngine).__lynInvalidate = push
+  ;(globalThis as GlobalWithInvalidate).__lynInvalidate = push
 }
 
 export const invalidate: Invalidate = createInvalidate((invalidation) => {
-  const push = (globalThis as GlobalWithEngine).__lynInvalidate
+  const push = (globalThis as GlobalWithInvalidate).__lynInvalidate
   if (!push) throw new Error("lyn: no running engine to invalidate")
   push(invalidation)
 })

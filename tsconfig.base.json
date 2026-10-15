@@ -4,7 +4,6 @@
     "module": "preserve",
     "moduleResolution": "bundler",
     "lib": ["es2023", "dom", "dom.iterable"],
-    "types": ["node"],
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
@@ -12,6 +11,5 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
-  },
-  "include": ["src"]
+  }
 }

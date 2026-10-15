@@ -1,4 +1,4 @@
-import { applyRows, decode, encode, queryKey, type ServerFrame } from "../shared/wire.ts"
+import { applyRows, decode, encode, queryKey, type ServerFrame } from "@lyn/core/wire"
 
 type Ref = { name: string }
 

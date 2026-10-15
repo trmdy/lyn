@@ -1,5 +1,8 @@
 import { Suspense, useState, useTransition, type FormEvent } from "react"
-import { live, useAction, useLyn, useMutation, useQuery } from "lyn"
+import { live, useAction, useLyn, useMutation, useQuery } from "@lyn/react"
+import { and, eq } from "drizzle-orm"
+import { db } from "./db"
+import { lists as listsTable, todos as todosTable } from "./db/schema"
 import * as activity from "./activity.lyn"
 import * as lists from "./lists.lyn"
 import * as todos from "./todos.lyn"
@@ -131,10 +134,10 @@ function Lists({ selected, onSelect }: { selected: string | null; onSelect: (id:
 }
 
 const ListHeader = live(
-  ({ db }, { listId }: { listId: string }) => ({
-    list: db.lists.where({ id: listId }).first(),
-    open: db.todos.where({ listId, done: false }).count(),
-    total: db.todos.where({ listId }).count(),
+  (_, { listId }: { listId: string }) => ({
+    list: db.query.lists.findFirst({ where: eq(listsTable.id, listId) }),
+    open: db.$count(todosTable, and(eq(todosTable.listId, listId), eq(todosTable.done, false))),
+    total: db.$count(todosTable, eq(todosTable.listId, listId)),
   }),
   function ListHeader({ list, open, total }) {
     return (

@@ -1,10 +1,12 @@
-import { action, query } from "lyn/server"
-import type {} from "./schema"
+import { action, query } from "@lyn/core"
+import { desc } from "drizzle-orm"
+import { db } from "./db"
+import { activity } from "./db/schema"
 
 let pings = 0
 
 export const recent = query({
-  handler: ({ db }) => db.activity.orderBy("createdAt", "desc").limit(6).all(),
+  handler: () => db.select().from(activity).orderBy(desc(activity.createdAt)).limit(6),
 })
 
 export const pingCount = query({

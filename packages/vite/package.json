@@ -1,0 +1,29 @@
+{
+  "name": "@lyn/vite",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "lyn": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/plugin.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "hono": "^4",
+    "vite": "^8"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "magic-string": "^1.4.3",
+    "oxc-parser": "^0.154.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "hono": "^4.13.13",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

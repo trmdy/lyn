@@ -28,7 +28,7 @@ Every change must respect these. If a change pulls against one, raise it instead
 
 ## Working here
 
-- Node 25+ and pnpm. `pnpm db start` runs a project-local Postgres 18 on port 54329.
+- Node 25+ and pnpm. `pnpm db start` runs a project-local Postgres 18 on port 54329; `pnpm --filter todos migrate` applies the example schema.
 - `pnpm dev` runs the example; `pnpm typecheck` checks every package.
 - Verify behavior by running the example and driving it in a browser, including direct `psql` writes.
 - No code comments; make code clear through naming and structure.

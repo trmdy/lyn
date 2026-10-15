@@ -5,6 +5,8 @@
   "scripts": {
     "db": "sh scripts/db.sh",
     "dev": "pnpm --filter todos dev",
+    "build": "pnpm --filter todos build",
+    "start": "pnpm --filter todos start",
     "typecheck": "pnpm -r typecheck"
   },
   "packageManager": "pnpm@10.28.0"

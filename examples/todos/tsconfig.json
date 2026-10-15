@@ -1,17 +1,5 @@
 {
-  "compilerOptions": {
-    "target": "es2023",
-    "module": "preserve",
-    "moduleResolution": "bundler",
-    "lib": ["es2023", "dom", "dom.iterable"],
-    "types": ["node"],
-    "jsx": "react-jsx",
-    "strict": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
-    "skipLibCheck": true
-  },
-  "include": ["src", "server.ts", "vite.config.ts"]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["node", "vite/client"] },
+  "include": ["src", "vite.config.ts"]
 }
