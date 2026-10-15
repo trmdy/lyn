@@ -115,6 +115,21 @@ Beyond these, Lyn has:
 
 This is early, but it is verified end to end with two users in a browser, against both the dev and production servers.
 
+`pnpm fuzz` checks the live-data guarantees. It applies random writes against about 24 query shapes, then checks that every live result equals a fresh query, both after each step and at the moment each mutation settles. The write mix includes:
+
+- single and multi-statement transactions
+- primary-key changes
+- truncates
+- concurrent bursts
+- row-level security sessions
+- subscription churn
+
+Current results:
+
+- **Soak:** 4,000 steps with no failures.
+- **Bug injection:** the fuzzer caught 6 of 7 deliberately injected bugs. The miss was a race inside Postgres's commit path that can't be triggered on demand.
+- **Precision:** about a third of re-runs change a result. The rest come from deliberately conservative cases, which is the baseline for future performance work.
+
 Sizes:
 
 - `@lyn/react` runtime: 7.1 KB gzipped (React is extra)
@@ -122,7 +137,6 @@ Sizes:
 
 Next up:
 
-- a correctness fuzzer for live queries
 - packaging for npm (`lyn` and `lynjs` are taken; `@lyn/*` is the working scope)
 - streaming SSR
 - routing

@@ -6,7 +6,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fuzz": "node fuzz/live.ts"
   },
   "dependencies": {
     "@lyn/core": "workspace:*",

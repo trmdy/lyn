@@ -31,4 +31,5 @@ Every change must respect these. If a change pulls against one, raise it instead
 - Node 25+ and pnpm. `pnpm db start` runs a project-local Postgres 18 on port 54329; `pnpm --filter todos migrate` applies the example schema.
 - `pnpm dev` runs the example; `pnpm typecheck` checks every package.
 - Verify behavior by running the example and driving it in a browser, including direct `psql` writes.
+- Run `pnpm fuzz` after touching the engine or an adapter. It applies random writes against `lyn_fuzz` and compares every live query with a fresh query after each step, and at the moment each mutation settles. Failures print a seed to replay with `pnpm fuzz --seed=<n>`.
 - No code comments; make code clear through naming and structure.
