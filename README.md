@@ -105,7 +105,10 @@ Beyond these, Lyn has:
 
 ## Behavior worth knowing
 
-- **Precise invalidation.** The Postgres adapter parses each SQL statement once and records tables plus `=`, `IN` and `= ANY` filters. Adding a todo to one list does not re-run queries for other lists. Views, user-defined functions and SQL it cannot parse fall back to re-running on every change: slower, but never stale.
+- **Precise invalidation.** The Postgres adapter parses each SQL statement once and records tables plus `=`, `IN` and `= ANY` filters. Adding a todo to one list does not re-run queries for other lists.
+  - It follows hidden reads: views, SQL functions and row-level security policies expand to the tables they read. In the example, changing a list's owner re-runs that list's todo queries.
+  - Functions in other languages (such as plpgsql) and SQL it cannot parse fall back to re-running on every change: slower, but never stale.
+  - Value comparisons are deliberately loose (`1.5` matches `"1.50"`), so a mismatch can only cause an extra re-run, never a missed update.
 - **Row-level security.** Each query and mutation runs with `lyn.session` set and, if you give it, a database role. Postgres row-level security policies then filter live data per user.
 - **Consistency.** Lyn re-runs queries in a snapshot that includes the commit. Optimistic updates are dropped only after the patches caused by that mutation have arrived.
 - **Hot data reload.** In dev, editing a `*.lyn.ts` file re-runs the affected live queries in open browsers.
@@ -115,20 +118,21 @@ Beyond these, Lyn has:
 
 This is early, but it is verified end to end with two users in a browser, against both the dev and production servers.
 
-`pnpm fuzz` checks the live-data guarantees. It applies random writes against about 24 query shapes, then checks that every live result equals a fresh query, both after each step and at the moment each mutation settles. The write mix includes:
+`pnpm fuzz` checks the live-data guarantees. It applies random writes against about 30 query shapes, then checks that every live result equals a fresh query, both after each step and at the moment each mutation settles. The write mix includes:
 
 - single and multi-statement transactions
 - primary-key changes
 - truncates
 - concurrent bursts
-- row-level security sessions
+- row-level security sessions, including policies that read other tables
+- nested savepoints inside mutations
 - subscription churn
 
 Current results:
 
 - **Soak:** 4,000 steps with no failures.
-- **Bug injection:** the fuzzer caught 6 of 7 deliberately injected bugs. The miss was a race inside Postgres's commit path that can't be triggered on demand.
-- **Precision:** about a third of re-runs change a result. The rest come from deliberately conservative cases, which is the baseline for future performance work.
+- **Bug injection:** the fuzzer caught 12 of 13 deliberately injected bugs. The miss was a race inside Postgres's commit path that can't be triggered on demand.
+- **Precision:** about half of re-runs change a result. The rest come from deliberately conservative cases, which is the baseline for future performance work.
 
 Sizes:
 

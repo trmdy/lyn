@@ -15,7 +15,7 @@ export interface Entry {
   args: unknown
   sub?: number
   server?: { value: unknown; version: number }
-  display: unknown
+  snapshot: { value: unknown; error?: Error }
   error?: Error
   ready: Promise<void>
   resolveReady: () => void
@@ -61,7 +61,7 @@ export class LynClient {
       for (const [name, args, value] of decode<[string, unknown, unknown][]>(options.initial)) {
         const entry = this.#create(name, args)
         entry.server = { value, version: 0 }
-        entry.display = value
+        entry.snapshot = { value }
         entry.resolveReady()
       }
     if (!this.#fetchQuery && typeof EventSource !== "undefined") this.#connect()
@@ -109,14 +109,16 @@ export class LynClient {
     let resolve!: () => void
     const ready = Object.assign(new Promise<void>((done) => (resolve = done)), { status: "pending" })
     const resolveReady = () => {
+      if (ready.status === "fulfilled") return
       ready.status = "fulfilled"
       resolve()
+      if (!entry.refs) this.#scheduleGc(entry)
     }
     const entry: Entry = {
       key,
       name,
       args,
-      display: undefined,
+      snapshot: { value: undefined },
       ready,
       resolveReady,
       listeners: new Set(),
@@ -127,16 +129,16 @@ export class LynClient {
       },
     }
     this.#entries.set(key, entry)
-    this.#scheduleGc(entry)
     if (this.#fetchQuery) {
       this.#fetchQuery(name, args).then(
         (value) => {
           entry.server = { value, version: 0 }
-          entry.display = value
+          entry.snapshot = { value }
           resolveReady()
         },
         (error) => {
           entry.error = error instanceof Error ? error : new Error(String(error))
+          entry.snapshot = { value: undefined, error: entry.error }
           resolveReady()
         },
       )
@@ -174,13 +176,20 @@ export class LynClient {
     this.#outgoingScheduled = true
     queueMicrotask(() => {
       this.#outgoingScheduled = false
-      const add = [...this.#outgoing.add].map((entry) => ({ sub: entry.sub!, name: entry.name, args: entry.args }))
+      const entries = [...this.#outgoing.add]
+      const add = entries.map((entry) => ({ sub: entry.sub!, name: entry.name, args: entry.args }))
       const remove = [...this.#outgoing.remove]
       this.#outgoing = { add: new Set(), remove: new Set() }
       if (!this.#clientId || (!add.length && !remove.length)) return
-      this.#post("subscribe", { clientId: this.#clientId, add, remove }).catch((error) =>
-        console.error("[lyn] subscribe failed", error),
-      )
+      this.#post("subscribe", { clientId: this.#clientId, add, remove }).catch((error: Error) => {
+        if (/session changed/i.test(error.message)) return this.reconnect()
+        for (const entry of entries) {
+          if (this.#bySub.get(entry.sub!) !== entry || entry.server) continue
+          entry.error = error
+          entry.resolveReady()
+        }
+        this.#recompute(new Set(entries))
+      })
     })
   }
 
@@ -261,9 +270,9 @@ export class LynClient {
       }
     }
     for (const entry of this.#entries.values()) {
-      const display = layer.has(entry.key) ? layer.get(entry.key) : entry.server?.value
-      if (display !== entry.display) {
-        entry.display = display
+      const value = layer.has(entry.key) ? layer.get(entry.key) : entry.server?.value
+      if (value !== entry.snapshot.value || entry.error !== entry.snapshot.error) {
+        entry.snapshot = { value, error: entry.error }
         touched.add(entry)
       }
     }
@@ -273,7 +282,13 @@ export class LynClient {
   async #post(route: string, body: unknown) {
     if (this.#fetchQuery) throw new Error("lyn: mutations and actions are not available during server rendering")
     const response = await fetch(`${this.#baseUrl}/_lyn/${route}`, { method: "POST", body: encode(body) })
-    const result = decode(await response.text())
+    const text = await response.text()
+    let result
+    try {
+      result = decode(text)
+    } catch {
+      throw new Error(text || `lyn: ${route} failed with status ${response.status}`)
+    }
     if (!response.ok) throw new Error(result.error)
     return result
   }

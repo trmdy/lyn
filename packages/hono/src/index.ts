@@ -93,7 +93,8 @@ export function lyn(options: LynOptions) {
       renderPage(options.app, { url: path, runQuery: (name, args) => engine.runQuery(name, args, session) }),
       template(path),
     ])
-    return c.html(html.replace("<!--lyn-app-->", page.body).replace("</head>", `${page.head}</head>`))
+    c.header("cache-control", "private, no-store")
+    return c.html(html.replace("<!--lyn-app-->", () => page.body).replace("</head>", () => `${page.head}</head>`))
   })
 
   return app

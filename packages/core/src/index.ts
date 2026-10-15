@@ -79,11 +79,13 @@ export interface ActionCtx {
   invalidate: Invalidate
 }
 
+type RowChangeKind = "insert" | "update" | "delete"
+
 export interface EffectDefinition {
   kind: "effect"
   name: string
   table: string
-  on: Change["kind"][]
+  on: RowChangeKind[]
   handler: (ctx: MutationCtx, change: Change) => unknown
 }
 
@@ -114,7 +116,7 @@ export function action<R, A = NoArgs>(definition: {
 
 export function effect(definition: {
   table: string
-  on?: Change["kind"][]
+  on?: RowChangeKind[]
   handler: (ctx: MutationCtx, change: Change) => unknown
 }): EffectDefinition {
   return define({ kind: "effect", on: ["insert", "update", "delete"], ...definition } as Omit<Definition, "name">)

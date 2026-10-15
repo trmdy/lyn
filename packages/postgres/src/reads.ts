@@ -24,14 +24,94 @@ export interface ReadSet {
   tables: TableRead[]
 }
 
+export interface CatalogInput {
+  tables: string[]
+  views: { name: string; definition: string }[]
+  policies: { table: string; using: string }[]
+  functions: { name: string; language: string; body: string }[]
+}
+
 export interface Catalog {
   tables: Set<string>
-  functions: Set<string>
+  relationDeps(name: string): string[] | null
+  functionDeps(name: string): string[] | null
 }
 
 type Node = Record<string, any>
 
 const tableName = (schema: string | undefined, name: string) => (schema && schema !== "public" ? `${schema}.${name}` : name)
+
+function walk(node: unknown, visit: (key: string, value: Node) => void) {
+  if (Array.isArray(node)) return node.forEach((child) => walk(child, visit))
+  if (!node || typeof node !== "object") return
+  for (const [key, value] of Object.entries(node)) {
+    if (value && typeof value === "object") {
+      if (!Array.isArray(value)) visit(key, value)
+      walk(value, visit)
+    }
+  }
+}
+
+const functionName = (call: Node) => (call.funcname as Node[]).map((part) => part.String?.sval).join(".")
+
+function references(sql: string): { relations: string[]; functions: string[] } | null {
+  let tree: Node
+  try {
+    tree = parseSync(sql)
+  } catch {
+    return null
+  }
+  const relations = new Set<string>()
+  const functions = new Set<string>()
+  walk(tree, (key, value) => {
+    if (key === "RangeVar") relations.add(tableName(value.schemaname, value.relname))
+    if (key === "FuncCall") functions.add(functionName(value))
+  })
+  return { relations: [...relations], functions: [...functions] }
+}
+
+export function buildCatalog(input: CatalogInput): Catalog {
+  const tables = new Set(input.tables)
+  const views = new Map(input.views.map((view) => [view.name, view.definition]))
+  const policies = new Map<string, string[]>()
+  for (const policy of input.policies) policies.set(policy.table, [...(policies.get(policy.table) ?? []), policy.using])
+  const functions = new Map<string, { language: string; body: string }[]>()
+  for (const fn of input.functions) {
+    for (const key of [fn.name, fn.name.split(".").at(-1)!])
+      functions.set(key, [...(functions.get(key) ?? []), { language: fn.language, body: fn.body }])
+  }
+
+  const relationCache = new Map<string, string[] | null>()
+  const functionCache = new Map<string, string[] | null>()
+
+  const union = (parts: (string[] | null)[]) => (parts.some((part) => part === null) ? null : [...new Set(parts.flat() as string[])])
+
+  const expand = (found: { relations: string[]; functions: string[] } | null, seen: Set<string>): string[] | null =>
+    found ? union([...found.relations.map((name) => relationDeps(name, seen)), ...found.functions.map((name) => functionDeps(name, seen))]) : null
+
+  function relationDeps(name: string, seen: Set<string>): string[] | null {
+    if (seen.has(`r:${name}`)) return []
+    seen.add(`r:${name}`)
+    if (tables.has(name)) return union([[name], ...(policies.get(name) ?? []).map((using) => expand(references(`select 1 where ${using}`), seen))])
+    if (views.has(name)) return expand(references(views.get(name)!), seen)
+    return null
+  }
+
+  function functionDeps(name: string, seen: Set<string>): string[] | null {
+    const definitions = functions.get(name) ?? functions.get(name.split(".").at(-1)!)
+    if (!definitions) return []
+    if (seen.has(`f:${name}`)) return []
+    seen.add(`f:${name}`)
+    return union(definitions.map((fn) => (fn.language === "sql" ? expand(references(fn.body), seen) : null)))
+  }
+
+  const cached = (cache: Map<string, string[] | null>, resolve: (name: string, seen: Set<string>) => string[] | null) => (name: string) => {
+    if (!cache.has(name)) cache.set(name, resolve(name, new Set()))
+    return cache.get(name)!
+  }
+
+  return { tables, relationDeps: cached(relationCache, relationDeps), functionDeps: cached(functionCache, functionDeps) }
+}
 
 function constantOf(node: Node | undefined): ValueSource | null {
   if (!node) return null
@@ -90,17 +170,6 @@ function fromRelations(items: Node[] | undefined, into: Node[] = []): Node[] {
   return into
 }
 
-function walk(node: unknown, visit: (key: string, value: Node) => void) {
-  if (Array.isArray(node)) return node.forEach((child) => walk(child, visit))
-  if (!node || typeof node !== "object") return
-  for (const [key, value] of Object.entries(node)) {
-    if (value && typeof value === "object") {
-      if (!Array.isArray(value)) visit(key, value)
-      walk(value, visit)
-    }
-  }
-}
-
 export function analyze(sql: string, catalog: Catalog): Template {
   const template: Template = { any: false, reads: [] }
   let tree: Node
@@ -115,11 +184,22 @@ export function analyze(sql: string, catalog: Catalog): Template {
   walk(tree, (key, value) => {
     if (key === "CommonTableExpr") cteNames.add(value.ctename)
   })
+  const isCte = (relation: Node) => !relation.schemaname && cteNames.has(relation.relname)
+  const read = (relation: Node, eq: Record<string, ValueSource[]> = {}) => {
+    const name = tableName(relation.schemaname, relation.relname)
+    if (isCte(relation) && !catalog.tables.has(name) && catalog.relationDeps(name) === null) return
+    const deps = catalog.relationDeps(name)
+    if (deps === null) {
+      template.any = true
+      return
+    }
+    for (const dep of deps) template.reads.push({ table: dep, eq: dep === name && !isCte(relation) ? eq : {} })
+  }
 
   const scoped = new Set<Node>()
   walk(tree, (key, value) => {
     if (key !== "SelectStmt") return
-    const relations = fromRelations(value.fromClause).filter((relation) => !cteNames.has(relation.relname))
+    const relations = fromRelations(value.fromClause)
     const byAlias = new Map<string, Node>()
     for (const relation of relations) {
       byAlias.set(relation.alias?.aliasname ?? relation.relname, relation)
@@ -136,20 +216,18 @@ export function analyze(sql: string, catalog: Catalog): Template {
       eq[name] ??= values
       eqByRelation.set(relation, eq)
     }
-    for (const relation of relations)
-      template.reads.push({ table: tableName(relation.schemaname, relation.relname), eq: eqByRelation.get(relation) ?? {} })
+    for (const relation of relations) read(relation, eqByRelation.get(relation))
   })
 
   walk(tree, (key, value) => {
-    if (key === "RangeVar" && !scoped.has(value) && !cteNames.has(value.relname))
-      template.reads.push({ table: tableName(value.schemaname, value.relname), eq: {} })
+    if (key === "RangeVar" && !scoped.has(value)) read(value)
     if (key === "FuncCall") {
-      const name = (value.funcname as Node[]).map((part) => part.String?.sval).join(".")
-      if (catalog.functions.has(name) || catalog.functions.has(name.split(".").at(-1)!)) template.any = true
+      const deps = catalog.functionDeps(functionName(value))
+      if (deps === null) template.any = true
+      else for (const dep of deps) template.reads.push({ table: dep, eq: {} })
     }
   })
 
-  if (template.reads.some((read) => !catalog.tables.has(read.table))) template.any = true
   return template
 }
 
@@ -159,7 +237,7 @@ export function readsOf(sql: string, params: unknown[], catalog: Catalog): ReadS
   let template = templates.get(sql)
   if (!template) {
     template = analyze(sql, catalog)
-    if (!template.any) templates.set(sql, template)
+    templates.set(sql, template)
   }
   const resolve = (source: ValueSource) =>
     "value" in source
@@ -182,10 +260,26 @@ export function clearTemplates() {
   templates.clear()
 }
 
+const TRUE = new Set(["true", "t", "yes", "y", "on"])
+const FALSE = new Set(["false", "f", "no", "n", "off"])
+
+function canonical(value: unknown): string | number | null {
+  if (value === null || value === undefined) return null
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === "boolean") return value ? "true" : "false"
+  if (typeof value === "number" || typeof value === "bigint") return Number(value)
+  const text = String(value).trim().toLowerCase()
+  if (TRUE.has(text)) return "true"
+  if (FALSE.has(text)) return "false"
+  if (text !== "" && Number.isFinite(Number(text))) return Number(text)
+  const time = Date.parse(text)
+  return /^\d{4}-\d{2}-\d{2}/.test(text) && Number.isFinite(time) ? time : text
+}
+
 function sameValue(a: unknown, b: unknown) {
-  if (a === b) return true
-  if (a instanceof Date || b instanceof Date) return new Date(a as any).getTime() === new Date(b as any).getTime()
-  return a != null && b != null && String(a) === String(b)
+  const left = canonical(a)
+  const right = canonical(b)
+  return left === null || right === null || left === right
 }
 
 function rowMatches(eq: Record<string, unknown[]>, row: Row | undefined) {

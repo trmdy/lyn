@@ -3,7 +3,7 @@ import type { Adapter, Change, ChangeBatch, ExecutionContext, Reader } from "@ly
 import { loadModule } from "libpg-query"
 import pg from "pg"
 import { LogicalReplicationService, PgoutputPlugin } from "pg-logical-replication"
-import { changeAffects, clearTemplates, readsOf, type Catalog, type ReadSet } from "./reads.ts"
+import { buildCatalog, changeAffects, clearTemplates, readsOf, type Catalog, type ReadSet } from "./reads.ts"
 
 export type { ReadSet, TableRead } from "./reads.ts"
 
@@ -15,6 +15,7 @@ export interface PostgresOptions {
 }
 
 interface Scope {
+  adapterId: string
   client: pg.PoolClient
   reads: ReadSet | null
   catalog: Catalog
@@ -26,7 +27,7 @@ const scope = new AsyncLocalStorage<Scope>()
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-const TRANSACTION_CONTROL = /^\s*(begin|start\s+transaction|commit|end|rollback|abort)\b/i
+const TRANSACTION_CONTROL = /^\s*(begin|start\s+transaction|commit|end|abort|rollback(?!\s+(?:work\s+|transaction\s+)?to\b))\b/i
 
 function rewriteTransactionControl(text: string, current: Scope) {
   const match = TRANSACTION_CONTROL.exec(text)
@@ -64,12 +65,21 @@ function scopedClient(current: Scope) {
 }
 
 export class LynPool extends pg.Pool {
+  adapterId = ""
+
   connectDirect(): Promise<pg.PoolClient> {
     return super.connect()
   }
 
-  override query(...args: any[]): any {
+  #scope() {
     const current = scope.getStore()
+    if (current && current.adapterId !== this.adapterId)
+      throw new Error(`lyn: this query uses ${this.adapterId} inside a handler running on ${current.adapterId}; use one database per handler`)
+    return current
+  }
+
+  override query(...args: any[]): any {
+    const current = this.#scope()
     if (!current) return (super.query as any)(...args)
     const callback = typeof args.at(-1) === "function" ? args.pop() : undefined
     const result = scopedQuery(current, args[0], args[1])
@@ -78,7 +88,7 @@ export class LynPool extends pg.Pool {
   }
 
   override connect(...args: any[]): any {
-    const current = scope.getStore()
+    const current = this.#scope()
     if (!current) return (super.connect as any)(...args)
     const client = scopedClient(current)
     if (typeof args[0] === "function") return args[0](undefined, client, () => {})
@@ -96,14 +106,16 @@ class TempSlotPgoutput extends PgoutputPlugin {
   }
 }
 
-function snapshotIncludes(xid32: number, snapshot: string) {
+const XID_SPACE = 1n << 32n
+
+export function snapshotIncludes(xid32: number, snapshot: string) {
   const [xminText, xmaxText, xipText] = snapshot.split(":")
   const xmin = BigInt(xminText!)
   const xmax = BigInt(xmaxText!)
   const inProgress = new Set((xipText ?? "").split(",").filter(Boolean).map(BigInt))
-  const epoch = xmax >> 32n
-  let xid = (epoch << 32n) | BigInt(xid32)
-  if (BigInt(xid32) > (xmax & 0xffffffffn)) xid -= 1n << 32n
+  let delta = (BigInt(xid32) - (xmax % XID_SPACE) + XID_SPACE) % XID_SPACE
+  if (delta >= XID_SPACE / 2n) delta -= XID_SPACE
+  const xid = xmax + delta
   return xid < xmin || (xid < xmax && !inProgress.has(xid))
 }
 
@@ -114,7 +126,8 @@ export class PostgresAdapter implements Adapter {
   readonly pool: LynPool
   readonly #options: PostgresOptions
   readonly #publication: string
-  readonly #catalog: Catalog = { tables: new Set(), functions: new Set() }
+  #catalog: Catalog = buildCatalog({ tables: [], views: [], policies: [], functions: [] })
+  #catalogTimer?: ReturnType<typeof setInterval>
   readonly #warned = new Set<string>()
   #replication?: LogicalReplicationService
   #open?: { xid: number; lsn: string; changes: Change[] }
@@ -126,8 +139,9 @@ export class PostgresAdapter implements Adapter {
   constructor(options: PostgresOptions) {
     this.#options = options
     this.#publication = options.publication ?? "lyn"
-    this.id = `postgres:${options.url}`
+    this.id = `postgres:${options.url}#role=${options.role ?? ""}&publication=${this.#publication}`
     this.pool = new LynPool({ connectionString: options.url, max: options.max ?? 20 })
+    this.pool.adapterId = this.id
   }
 
   sql = async <R = Record<string, unknown>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<R[]> => {
@@ -145,13 +159,16 @@ export class PostgresAdapter implements Adapter {
          end if;
        end $$`,
     )
-    await this.#refreshCatalog()
+    await this.refreshCatalog()
+    this.#catalogTimer = setInterval(() => this.refreshCatalog().catch(() => {}), 30_000)
+    this.#catalogTimer.unref?.()
     await this.#startReplication()
     await this.#claimLeadership()
   }
 
   async stop() {
     this.#stopped = true
+    clearInterval(this.#catalogTimer)
     clearTimeout(this.#leaderRetry)
     await this.#leaderClient?.end().catch(() => {})
     await this.#replication?.destroy()
@@ -164,7 +181,8 @@ export class PostgresAdapter implements Adapter {
 
   affects(reads: unknown, batch: ChangeBatch) {
     const readSet = reads as ReadSet | undefined
-    if (!readSet || readSet.any || batch.changes.some((change) => change.source === "*")) return batch.changes.length > 0
+    if (batch.resync) return true
+    if (!readSet || readSet.any) return batch.changes.length > 0
     return batch.changes.some((change) => readSet.tables.some((read) => changeAffects(read, change)))
   }
 
@@ -172,15 +190,24 @@ export class PostgresAdapter implements Adapter {
     const xids = after.flatMap((batch) => batch.tokens).map(Number)
     const client = await this.pool.connectDirect()
     try {
+      const deadline = Date.now() + 10_000
       for (let attempt = 0; ; attempt++) {
         await client.query("begin isolation level repeatable read read only")
         const { rows } = await client.query("select pg_current_snapshot()::text as snapshot")
-        if (attempt >= 200 || xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) break
+        if (xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) break
         await client.query("rollback")
-        await sleep(1)
+        if (Date.now() > deadline) throw new Error(`lyn: committed transactions ${xids.join(", ")} never became visible`)
+        await sleep(Math.min(50, 1 + attempt))
       }
       const read: Reader = async (context, task) => {
-        const current: Scope = { client, reads: { any: false, tables: [] }, catalog: this.#catalog, tail: Promise.resolve(), savepoints: 0 }
+        const current: Scope = {
+          adapterId: this.id,
+          client,
+          reads: { any: false, tables: [] },
+          catalog: this.#catalog,
+          tail: Promise.resolve(),
+          savepoints: 0,
+        }
         await client.query("savepoint lyn_read")
         try {
           await this.#applyContext(client, context)
@@ -208,12 +235,15 @@ export class PostgresAdapter implements Adapter {
     try {
       await client.query("begin")
       await this.#applyContext(client, context)
-      const current: Scope = { client, reads: null, catalog: this.#catalog, tail: Promise.resolve(), savepoints: 0 }
+      const current: Scope = { adapterId: this.id, client, reads: null, catalog: this.#catalog, tail: Promise.resolve(), savepoints: 0 }
       const value = await scope.run(current, run)
       await current.tail
       const { rows } = await client.query("select pg_current_xact_id_if_assigned()::text as xid")
       const token = rows[0].xid ? String(Number(BigInt(rows[0].xid) & 0xffffffffn)) : undefined
-      if (token) beforeCommit?.(token)
+      if (token) {
+        await client.query("select pg_logical_emit_message(true, 'lyn', '')")
+        beforeCommit?.(token)
+      }
       await client.query("commit")
       return { value, token }
     } catch (error) {
@@ -230,23 +260,44 @@ export class PostgresAdapter implements Adapter {
     await client.query("select set_config('lyn.session', $1, true), set_config('role', $2, true)", [session, role])
   }
 
-  async #refreshCatalog() {
-    const [tables, functions] = await Promise.all([
+  async refreshCatalog() {
+    const [tables, views, policies, functions] = await Promise.all([
       this.pool.query("select schemaname, tablename from pg_publication_tables where pubname = $1", [this.#publication]),
       this.pool.query(
-        `select n.nspname, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        `select schemaname, viewname, definition from pg_views where schemaname not in ('pg_catalog', 'information_schema')`,
+      ),
+      this.pool.query(
+        `select n.nspname, c.relname, pg_get_expr(p.polqual, p.polrelid) as using
+         from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace
+         where p.polqual is not null`,
+      ),
+      this.pool.query(
+        `select n.nspname, p.proname, l.lanname, p.prosrc from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace join pg_language l on l.oid = p.prolang
          where n.nspname not in ('pg_catalog', 'information_schema')`,
       ),
     ])
-    const tableRows: { schemaname: string; tablename: string }[] = tables.rows
-    const functionRows: { nspname: string; proname: string }[] = functions.rows
-    this.#catalog.tables = new Set(tableRows.map((row) => sourceName(row.schemaname, row.tablename)))
-    this.#catalog.functions = new Set(functionRows.flatMap((row) => [row.proname, `${row.nspname}.${row.proname}`]))
+    this.#catalog = buildCatalog({
+      tables: tables.rows.map((row: { schemaname: string; tablename: string }) => sourceName(row.schemaname, row.tablename)),
+      views: views.rows.map((row: { schemaname: string; viewname: string; definition: string }) => ({
+        name: sourceName(row.schemaname, row.viewname),
+        definition: row.definition,
+      })),
+      policies: policies.rows.map((row: { nspname: string; relname: string; using: string }) => ({
+        table: sourceName(row.nspname, row.relname),
+        using: row.using,
+      })),
+      functions: functions.rows.map((row: { nspname: string; proname: string; lanname: string; prosrc: string }) => ({
+        name: `${row.nspname}.${row.proname}`,
+        language: row.lanname,
+        body: row.prosrc,
+      })),
+    })
     clearTemplates()
   }
 
   async #startReplication() {
-    const plugin = new TempSlotPgoutput({ protoVersion: 1, publicationNames: [this.#publication] })
+    const plugin = new TempSlotPgoutput({ protoVersion: 1, publicationNames: [this.#publication], messages: true })
     const slotCreated = new Promise<void>((resolve) => (plugin.onSlotCreated = resolve))
     const replication = new LogicalReplicationService(
       { connectionString: this.#options.url },
@@ -254,20 +305,42 @@ export class PostgresAdapter implements Adapter {
     )
     this.#replication = replication
     replication.on("data", (_lsn, message) => this.#onWal(message))
+    let started = false
     let restarting = false
     const restart = (error: unknown) => {
-      if (this.#stopped || restarting) return
+      if (this.#stopped || restarting || !started) return
       restarting = true
       console.error("[lyn] replication stream lost, restarting:", errorMessage(error))
-      replication.destroy().finally(async () => {
-        await sleep(1000)
-        await this.#startReplication().catch((e) => console.error("[lyn] replication restart failed:", errorMessage(e)))
-        this.#onChanges({ tokens: [], changes: [{ source: "*", kind: "truncate" }] })
-      })
+      replication.destroy().finally(() => this.#recoverReplication())
     }
     replication.on("error", restart)
-    replication.subscribe(plugin, `lyn_${process.pid}_${Date.now().toString(36)}`).then(() => restart(new Error("stream ended")), restart)
-    await slotCreated
+    const subscription = replication.subscribe(plugin, `lyn_${process.pid}_${Date.now().toString(36)}`)
+    try {
+      await Promise.race([
+        slotCreated,
+        subscription.then(() => {
+          throw new Error("replication stream ended before it started")
+        }),
+      ])
+    } catch (error) {
+      await replication.destroy().catch(() => {})
+      throw error
+    }
+    started = true
+    subscription.then(() => restart(new Error("stream ended")), restart)
+  }
+
+  async #recoverReplication() {
+    for (let attempt = 0; !this.#stopped; attempt++) {
+      await sleep(Math.min(30_000, 1000 * 2 ** attempt))
+      try {
+        await this.#startReplication()
+        this.#onChanges({ tokens: [], changes: [], resync: true })
+        return
+      } catch (error) {
+        console.error("[lyn] replication restart failed:", errorMessage(error))
+      }
+    }
   }
 
   #onWal(message: any) {
@@ -278,7 +351,7 @@ export class PostgresAdapter implements Adapter {
         return
       case "relation": {
         const name = sourceName(message.schema, message.name)
-        if (!this.#catalog.tables.has(name)) this.#refreshCatalog().catch(() => {})
+        if (!this.#catalog.tables.has(name)) this.refreshCatalog().catch(() => {})
         if (message.replicaIdentity !== "full" && !this.#warned.has(name)) {
           this.#warned.add(name)
           console.warn(

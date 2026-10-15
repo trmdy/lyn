@@ -32,7 +32,9 @@ A `context` carries the session (or marks a system call for effects). Adapters a
 ## Postgres adapter
 
 - **Driver-level tracking.** `postgres({ url })` exposes `pool`, a `pg.Pool` subclass. Inside a Lyn handler, AsyncLocalStorage routes every query on that pool to the handler's transaction and records it. Any query layer that accepts a `pg.Pool` works unchanged.
-- **Read sets from SQL.** Each statement is parsed with libpg_query (cached per SQL string). Every relation becomes a table dependency; top-level `col = value` and `col IN (...)` conjuncts narrow it. Unknown relations (views) and user-defined functions make the read set match every change: correct, never precise-but-wrong.
+- **Read sets from SQL.** Each statement is parsed with libpg_query (cached per SQL string). Every relation becomes a table dependency; top-level `col = value`, `col IN (...)` and `col = ANY($n)` conjuncts narrow it. A catalog of views, SQL function bodies and row-level security policies expands hidden reads into extra table dependencies. Opaque functions (plpgsql, C) and unknown relations make the read set match every change: correct, never precise-but-wrong. The catalog refreshes every 30 seconds, when an unknown table appears in the change stream, or on `adapter.refreshCatalog()`.
+- **Isolation.** A pool only serves the adapter it belongs to; querying another Lyn database inside a handler throws. Engines are shared per URL, role and publication.
+- **Settling.** Every mutation that writes emits a transactional logical message, so its commit always appears in the change stream, even when savepoint rollbacks leave no row changes.
 - **Change feed.** Logical replication (`pgoutput`) over a temporary slot that disappears with the process.
 - **Consistency.** Re-runs happen in a repeatable-read snapshot verified to include the batch's transactions. Mutations report their transaction id; core sends `settled` after the patches it caused.
 

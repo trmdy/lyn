@@ -35,10 +35,10 @@ export function useQuery<A, R>(query: QueryRef<A, R>, ...[args]: ArgsParam<A>): 
   const client = useLyn()
   const entry = client.entry(query.name, args ?? {})
   useEffect(() => client.retain(entry), [client, entry])
-  const value = useSyncExternalStore(entry.subscribe, () => entry.display, () => entry.display)
+  const snapshot = useSyncExternalStore(entry.subscribe, () => entry.snapshot, () => entry.snapshot)
   use(entry.ready)
-  if (entry.error) throw entry.error
-  return value as Awaited<R>
+  if (snapshot.error) throw snapshot.error
+  return snapshot.value as Awaited<R>
 }
 
 export function useMutation<A, R>(

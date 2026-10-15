@@ -40,14 +40,19 @@ const val = () => int(0, 9)
 
 const SCHEMA = `
   drop view if exists flagged;
-  drop table if exists groups, items, items_default, owned, barrier cascade;
+  drop table if exists groups, items, items_default, owned, members, secrets, barrier cascade;
   drop function if exists fuzz_double(int);
   drop function if exists flagged_in(int);
+  drop function if exists flagged_plpgsql(int);
   create table groups (id int primary key, name text not null);
-  create table items (id int primary key, grp int not null, flag boolean not null default false, val int not null default 0, tag text);
+  create table items (id int primary key, grp int not null, flag boolean not null default false, val int not null default 0, tag text, price numeric(6,2) not null default 0);
   create table items_default (id int primary key, grp int not null, val int not null default 0);
   create table owned (id int primary key, owner int not null, val int not null default 0);
+  create table members (owner int not null, grp int not null, primary key (owner, grp));
+  create table secrets (id int primary key, grp int not null, val int not null default 0);
   create table barrier (id int primary key, n int not null);
+  alter table members replica identity full;
+  alter table secrets replica identity full;
   alter table groups replica identity full;
   alter table items replica identity full;
   alter table owned replica identity full;
@@ -55,12 +60,18 @@ const SCHEMA = `
   create view flagged as select * from items where flag;
   create function fuzz_double(int) returns int language sql immutable as $$ select $1 * 2 $$;
   create function flagged_in(g int) returns int language sql stable as $$ select count(*)::int from items where grp = g and flag $$;
+  create function flagged_plpgsql(g int) returns int language plpgsql stable as $$ begin return (select count(*) from items where grp = g and flag); end $$;
   insert into barrier values (1, 0);
   do $$ begin
     if not exists (select 1 from pg_roles where rolname = '${role}') then create role ${role} nologin; end if;
   end $$;
   grant usage on schema public to ${role};
   grant select, insert, update, delete, truncate on all tables in schema public to ${role};
+  alter table secrets enable row level security;
+  create policy shared on secrets using (exists (
+    select 1 from members m
+    where m.grp = secrets.grp and m.owner = (nullif(current_setting('lyn.session', true), '')::jsonb ->> 'owner')::int
+  ));
   alter table owned enable row level security;
   create policy own on owned
     using (owner = (nullif(current_setting('lyn.session', true), '')::jsonb ->> 'owner')::int)
@@ -98,6 +109,14 @@ const QUERIES: Record<string, QuerySpec> = {
   },
   userFunction: { sql: `select id, fuzz_double(val) as doubled from items where grp = $1 order by id`, args: () => [grp()] },
   hiddenRead: { sql: `select g.id, flagged_in(g.id) as flagged from groups g order by g.id`, args: () => [] },
+  hiddenReadPlpgsql: { sql: `select g.id, flagged_plpgsql(g.id) as flagged from groups g order by g.id`, args: () => [] },
+  byPrice: { sql: `select id from items where price = $1 order by id`, args: () => [pick(["1.5", "1.50", 2.25, "0", 0])] },
+  shadowingCte: {
+    sql: `with items as (select * from items where grp = $1) select count(*)::int as n from items`,
+    args: () => [grp()],
+  },
+  secrets: { sql: `select * from secrets order by id`, args: () => [] },
+  secretsByGroup: { sql: `select id, val from secrets where grp = $1 order by id`, args: () => [grp()] },
   owned: { sql: `select * from owned order by id`, args: () => [] },
   ownedByVal: { sql: `select id from owned where val = $1 order by id`, args: () => [val()] },
   drizzleStyle: {
@@ -116,6 +135,12 @@ type Statement = { sql: string; params: unknown[] }
 
 const WRITES: (() => Statement)[] = [
   () => ({ sql: `insert into items (id, grp, flag, val, tag) values ($1, $2, $3, $4, $5) on conflict do nothing`, params: [id(), grp(), chance(0.5), val(), pick(["a", "b", null])] }),
+  () => ({ sql: `update items set price = $2 where id = $1`, params: [id(), pick([0, 1.5, 2.25])] }),
+  () => ({ sql: `insert into members (owner, grp) values ($1, $2) on conflict do nothing`, params: [int(1, 2), grp()] }),
+  () => ({ sql: `delete from members where owner = $1 and grp = $2`, params: [int(1, 2), grp()] }),
+  () => ({ sql: `insert into secrets (id, grp, val) values ($1, $2, $3) on conflict do nothing`, params: [id(), grp(), val()] }),
+  () => ({ sql: `update secrets set grp = $2, val = $3 where id = $1`, params: [id(), grp(), val()] }),
+  () => ({ sql: `delete from secrets where id = $1`, params: [id()] }),
   () => ({ sql: `update items set grp = $2 where id = $1`, params: [id(), grp()] }),
   () => ({ sql: `update items set flag = not flag where id = $1`, params: [id()] }),
   () => ({ sql: `update items set val = $2, tag = $3 where id = $1`, params: [id(), val(), pick(["a", "b", null])] }),
@@ -176,6 +201,8 @@ async function setup() {
     await client.query("insert into items values ($1, $2, $3, $4, $5)", [i, grp(), chance(0.5), val(), pick(["a", "b", null])])
   for (let i = 1; i <= 8; i++) await client.query("insert into items_default values ($1, $2, $3)", [i, grp(), val()])
   for (let i = 1; i <= 8; i++) await client.query("insert into owned values ($1, $2, $3)", [i, int(1, 2), val()])
+  for (let i = 1; i <= 8; i++) await client.query("insert into secrets values ($1, $2, $3)", [i, grp(), val()])
+  for (let g = 1; g <= 4; g++) if (chance(0.5)) await client.query("insert into members values ($1, $2)", [int(1, 2), g])
   return client
 }
 
@@ -208,6 +235,32 @@ async function main() {
 
   const engine = Engine.for(adapter)
   await engine.ready
+
+  const nestedProbe = await engine
+    .mutate(
+      {
+        mutationId: crypto.randomUUID(),
+        name: "fuzz:exec",
+        args: {
+          statements: [
+            { sql: "begin", params: [] },
+            { sql: "insert into items (id, grp) values (101, 1)", params: [] },
+            { sql: "savepoint sp1", params: [] },
+            { sql: "insert into items (id, grp) values (102, 1)", params: [] },
+            { sql: "rollback to savepoint sp1", params: [] },
+            { sql: "insert into items (id, grp) values (103, 1)", params: [] },
+            { sql: "commit", params: [] },
+          ],
+        },
+      },
+      null,
+    )
+    .then(
+      async () => (await direct.query("select array_agg(id order by id) as ids from items where id > 100")).rows[0].ids?.join(",") ?? "",
+      (error: Error) => `error: ${error.message}`,
+    )
+  if (nestedProbe !== "101,103") failures.push(`nested transaction inside a mutation left rows [${nestedProbe}], expected [101,103]`)
+  await direct.query("delete from items where id > 100")
 
   const clients: FakeClient[] = SESSIONS.map((session) => {
     const client: FakeClient = { session, connection: { id: "" }, subs: new Map(), settled: new Map(), nextSub: 1 }
@@ -308,9 +361,19 @@ async function main() {
     }
   }
 
+  const nested = (): Statement[] => [
+    { sql: "begin", params: [] },
+    pick(WRITES)(),
+    { sql: "savepoint sp1", params: [] },
+    pick(WRITES)(),
+    { sql: chance(0.5) ? "rollback to savepoint sp1" : "release savepoint sp1", params: [] },
+    pick(WRITES)(),
+    { sql: chance(0.8) ? "commit" : "rollback", params: [] },
+  ]
+
   const engineMutation = async (checkSettle: boolean) => {
     const client = pick(clients)
-    const batch = statements()
+    const batch = chance(0.25) ? [...statements(), ...nested()] : statements()
     const mutationId = crypto.randomUUID()
     record(`mutate as ${JSON.stringify(client.session)}: ${batch.map((s) => `${s.sql.split(" ").slice(0, 3).join(" ")} ${JSON.stringify(s.params)}`).join(" ; ")}`)
     let result

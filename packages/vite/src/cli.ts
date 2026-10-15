@@ -70,11 +70,13 @@ async function start() {
   const { serveStatic } = await import("@hono/node-server/serve-static")
   const { default: app } = await import(pathToFileURL(resolve(root, "dist/server/entry.js")).href)
   const server = new Hono()
-  server.use("/assets/*", async (c, next) => {
-    await next()
-    if (c.res.ok) c.header("cache-control", "public, max-age=31536000, immutable")
-  })
-  server.use("*", serveStatic({ root: "dist/client", index: "\0" }))
+  server.use(
+    "/assets/*",
+    serveStatic({ root: "dist/client", onFound: (_path, c) => c.header("cache-control", "public, max-age=31536000, immutable") }),
+  )
+  server.get("/assets/*", (c) => c.notFound())
+  const files = serveStatic({ root: "dist/client", index: "\0" })
+  server.use("*", (c, next) => (c.req.path === "/index.html" ? next() : files(c, next)))
   server.route("/", app)
   const listening = serve({ fetch: server.fetch, port, hostname: host }, () =>
     console.log(`[lyn] production server ready on http://${host}:${port}`),

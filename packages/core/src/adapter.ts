@@ -18,6 +18,7 @@ export interface ChangeBatch {
   tokens: string[]
   changes: Change[]
   position?: string
+  resync?: boolean
 }
 
 export type ReadResult<T> = { ok: true; value: T; reads: unknown } | { ok: false; error: unknown; reads: unknown }
