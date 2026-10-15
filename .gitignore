@@ -1,4 +1,4 @@
-node_modules
-dist
-.pgdata
 *.log
+.pgdata
+dist
+node_modules

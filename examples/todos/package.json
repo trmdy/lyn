@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node server.ts",
+    "build": "lyn build",
+    "start": "NODE_ENV=production node server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

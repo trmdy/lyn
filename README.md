@@ -13,6 +13,13 @@ pnpm dev             # http://127.0.0.1:3000 (set PORT to change)
 pnpm db psql         # poke the database; the UI updates live
 ```
 
+For production:
+
+```sh
+pnpm --filter todos build   # dist/client (browser) + dist/server/entry.js (SSR + server modules)
+pnpm --filter todos start   # NODE_ENV=production; serves dist/, no Vite at runtime
+```
+
 ## The API
 
 Server code lives in `*.lyn.ts` files. The Vite plugin replaces them with tiny references in the browser bundle.
@@ -92,6 +99,19 @@ Subscriptions are shared only between connections with the same session. A chang
 
 When the session changes (sign in, sign out, switching user), call `useLyn().reconnect()`. The event stream reconnects with the new cookie and every subscription refreshes in place. The example signs sessions with HMAC cookies; see `examples/todos/server.ts`.
 
+## Production
+
+`lyn build` runs two Vite builds:
+
+- `dist/client` holds the browser bundle. `*.lyn.ts` modules are replaced with name references and `live()` loaders with ids, so SQL, validators and handlers never ship to the browser.
+- `dist/server/entry.js` holds the app and every server module. It imports `lyn` at runtime instead of bundling it, so the renderer and the app share one React context and one registry.
+
+`createLynServer` switches to production when `NODE_ENV=production`. It serves `dist/client`, with immutable caching for hashed `/assets/*`, renders pages from the server bundle and hides error details from responses.
+
+Browser code that imports `lyn/server`, `lyn/node` or `pg` fails the build with a message pointing at the file. The app entry defaults to `/src/App.tsx`; change it with `lyn({ app })` in `vite.config.ts`.
+
+You can run several server instances against one database. Each instance has its own temporary replication slot and serves its own clients. Effects run on exactly one instance, elected with a Postgres advisory lock. If that instance dies, another takes over within about 5 seconds.
+
 ## How it works
 
 1. **Change stream.** On startup the server creates a publication and a temporary logical replication slot (`pgoutput`). The slot disappears when the server stops, so a crashed server can't fill the disk with old WAL.
@@ -108,13 +128,15 @@ These work and have been verified end to end:
 
 - live queries, `live()` components and SSR/hydration
 - per-user sessions with row-level security, including switching users without a reload
+- production build and server, the browser-import guard, and effects running once across instances with failover
 - optimistic mutations, effects, actions and tag invalidation
 - precise invalidation, and changes made directly in `psql`
 
 Not built yet:
 
-- a production build (`vite build` plus a production server)
-- running more than one server node
+- publishing `lyn` to npm (the package ships TypeScript source, which Node 23+ runs directly)
+- a durable effect queue (an effect is lost if the leader dies between the commit and running the effect)
+- streaming SSR (pages wait for all data before sending)
 - incremental view maintenance instead of re-running queries
 - non-equality filters in the query builder
 - resuming a dropped SSE stream (reconnecting currently re-subscribes everything)

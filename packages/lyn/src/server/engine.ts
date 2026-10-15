@@ -149,6 +149,8 @@ export class Engine {
   #flushScheduled = false
   #replication?: LogicalReplicationService
   #closed = false
+  #effectsLock?: pg.Client
+  #effectsRetry?: ReturnType<typeof setTimeout>
 
   constructor(databaseUrl: string, options: { role?: string } = {}) {
     this.#databaseUrl = databaseUrl
@@ -165,13 +167,35 @@ export class Engine {
        end $$`,
     )
     await this.#startReplication()
+    await this.#claimEffects()
     setGlobalInvalidate((invalidation) => this.invalidate(invalidation))
   }
 
   async close() {
     this.#closed = true
+    clearTimeout(this.#effectsRetry)
+    await this.#effectsLock?.end().catch(() => {})
     await this.#replication?.destroy()
     await this.pool.end()
+  }
+
+  async #claimEffects() {
+    if (this.#closed) return
+    const client = new pg.Client({ connectionString: this.#databaseUrl })
+    const retry = () => {
+      if (this.#effectsLock === client) this.#effectsLock = undefined
+      client.end().catch(() => {})
+      if (!this.#closed) this.#effectsRetry = setTimeout(() => this.#claimEffects(), 5_000)
+    }
+    client.on("error", retry)
+    try {
+      await client.connect()
+      const { rows } = await client.query("select pg_try_advisory_lock(hashtext('lyn:effects')) as claimed")
+      if (!rows[0].claimed) return retry()
+      this.#effectsLock = client
+    } catch {
+      retry()
+    }
   }
 
   async #startReplication() {
@@ -508,6 +532,7 @@ export class Engine {
   }
 
   #runEffects(commits: Commit[]) {
+    if (!this.#effectsLock) return
     const effects = definitionsOfKind("effect") as unknown as EffectDefinition[]
     if (!effects.length) return
     for (const commit of commits)

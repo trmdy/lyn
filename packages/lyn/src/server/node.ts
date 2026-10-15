@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises"
+import { createReadStream } from "node:fs"
+import { readFile, stat } from "node:fs/promises"
 import http from "node:http"
-import { join } from "node:path"
+import { extname, join, resolve, sep } from "node:path"
+import { pathToFileURL } from "node:url"
 import type { ComponentType } from "react"
 import { decode, encode } from "../shared/wire.ts"
 import { Engine } from "./engine.ts"
@@ -104,52 +106,132 @@ export interface LynServerOptions {
   port?: number
   host?: string
   root?: string
-  app?: string
+  production?: boolean
   auth?: Auth
   role?: string
   onRequest?: (request: http.IncomingMessage, response: http.ServerResponse) => boolean | Promise<boolean>
 }
 
+type App = ComponentType<{ url: string }>
+
+interface Frontend {
+  serveAsset(request: http.IncomingMessage, response: http.ServerResponse, next: () => void): void
+  loadApp(): Promise<App>
+  template(url: string): Promise<string>
+  describeError(error: unknown): string
+  close(): Promise<void>
+}
+
+const SERVER_ENTRY = "virtual:lyn/server-entry"
+
+async function developmentFrontend(root: string, server: http.Server): Promise<Frontend> {
+  const { createServer } = await import("vite")
+  const vite = await createServer({ root, appType: "custom", server: { middlewareMode: true, hmr: { server } } })
+  return {
+    serveAsset: (request, response, next) => vite.middlewares(request, response, next),
+    loadApp: async () => (await vite.ssrLoadModule(SERVER_ENTRY)).App,
+    template: async (url) => vite.transformIndexHtml(url, await readFile(join(root, "index.html"), "utf8")),
+    describeError: (error) => {
+      if (error instanceof Error) vite.ssrFixStacktrace(error)
+      return error instanceof Error ? (error.stack ?? error.message) : String(error)
+    },
+    close: () => vite.close(),
+  }
+}
+
+async function productionFrontend(root: string): Promise<Frontend> {
+  const clientDir = join(root, "dist/client")
+  const entry = join(root, "dist/server/entry.js")
+  const [template, { App }] = await Promise.all([
+    readFile(join(clientDir, "index.html"), "utf8"),
+    import(pathToFileURL(entry).href),
+  ]).catch((error) => {
+    throw new Error(`lyn: no production build in ${join(root, "dist")}; run \`lyn build\` first`, { cause: error })
+  })
+  return {
+    serveAsset: (request, response, next) => serveStatic(clientDir, request, response).then((served) => served || next()),
+    loadApp: async () => App,
+    template: async () => template,
+    describeError: () => "Internal Server Error",
+    close: async () => {},
+  }
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".map": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".txt": "text/plain; charset=utf-8",
+  ".webmanifest": "application/manifest+json",
+}
+
+async function serveStatic(dir: string, request: http.IncomingMessage, response: http.ServerResponse) {
+  if (request.method !== "GET" && request.method !== "HEAD") return false
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(new URL(request.url ?? "/", "http://lyn").pathname)
+  } catch {
+    return false
+  }
+  const file = resolve(dir, "." + pathname)
+  if (!file.startsWith(dir + sep) || file === join(dir, "index.html")) return false
+  const info = await stat(file).catch(() => null)
+  if (!info?.isFile()) return false
+  response.writeHead(200, {
+    "content-type": CONTENT_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream",
+    "content-length": info.size,
+    "cache-control": pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "public, max-age=0, must-revalidate",
+  })
+  if (request.method === "HEAD") response.end()
+  else createReadStream(file).pipe(response)
+  return true
+}
+
 export async function createLynServer(options: LynServerOptions) {
   const root = options.root ?? process.cwd()
-  const appPath = options.app ?? "/src/App.tsx"
+  const production = options.production ?? process.env.NODE_ENV === "production"
   const engine = new Engine(options.databaseUrl, { role: options.role })
   await engine.start()
 
   const server = http.createServer()
-  const { createServer } = await import("vite")
-  const vite = await createServer({
-    root,
-    appType: "custom",
-    server: { middlewareMode: true, hmr: { server } },
-  })
+  const frontend = production ? await productionFrontend(root) : await developmentFrontend(root, server)
+  await frontend.loadApp()
 
-  const loadApp = async () => {
-    await vite.ssrLoadModule("virtual:lyn/modules")
-    return (await vite.ssrLoadModule(appPath)).default as ComponentType<{ url: string }>
+  const renderHtml = async (request: http.IncomingMessage, response: http.ServerResponse) => {
+    try {
+      const url = request.url ?? "/"
+      const [App, template, session] = await Promise.all([
+        frontend.loadApp(),
+        frontend.template(url),
+        sessionFor(options.auth, request),
+      ])
+      const page = await renderPage(App, { url, runQuery: (name, args) => engine.runQuery(name, args, session) })
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+      response.end(template.replace("<!--lyn-app-->", page.body).replace("</head>", `${page.head}</head>`))
+    } catch (error) {
+      console.error(error)
+      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" })
+      response.end(frontend.describeError(error))
+    }
   }
-  await loadApp()
 
   server.on("request", async (request, response) => {
     try {
       if (await handleLynRequest(engine, request, response, options.auth)) return
       if (await options.onRequest?.(request, response)) return
-      vite.middlewares(request, response, async () => {
-        try {
-          const url = request.url ?? "/"
-          const App = await loadApp()
-          const template = await vite.transformIndexHtml(url, await readFile(join(root, "index.html"), "utf8"))
-          const session = await sessionFor(options.auth, request)
-          const page = await renderPage(App, { url, runQuery: (name, args) => engine.runQuery(name, args, session) })
-          response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-          response.end(template.replace("<!--lyn-app-->", page.body).replace("</head>", `${page.head}</head>`))
-        } catch (error) {
-          vite.ssrFixStacktrace(error as Error)
-          console.error(error)
-          response.writeHead(500, { "content-type": "text/plain" })
-          response.end(error instanceof Error ? error.stack : String(error))
-        }
-      })
+      frontend.serveAsset(request, response, () => renderHtml(request, response))
     } catch (error) {
       console.error(error)
       if (!response.headersSent) response.writeHead(500)
@@ -158,14 +240,16 @@ export async function createLynServer(options: LynServerOptions) {
   })
 
   const port = options.port ?? 3000
-  await new Promise<void>((resolve) => server.listen(port, options.host ?? "127.0.0.1", resolve))
-  console.log(`[lyn] ready on http://${options.host ?? "127.0.0.1"}:${port}`)
+  const host = options.host ?? "127.0.0.1"
+  await new Promise<void>((done) => server.listen(port, host, done))
+  console.log(`[lyn] ${production ? "production" : "development"} server ready on http://${host}:${port}`)
 
   const close = async () => {
     server.close()
-    await vite.close()
+    server.closeAllConnections()
+    await frontend.close()
     await engine.close()
   }
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => close().finally(() => process.exit(0)))
-  return { server, engine, vite, close }
+  return { server, engine, close }
 }

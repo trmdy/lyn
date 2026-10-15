@@ -6,6 +6,8 @@ import type { Plugin } from "vite"
 const SERVER_MODULE = /\.lyn\.[cm]?[jt]sx?$/
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/
 const MODULES_ID = "virtual:lyn/modules"
+const SERVER_ENTRY_ID = "virtual:lyn/server-entry"
+const SERVER_ONLY = new Set(["lyn/server", "lyn/node", "pg", "pg-logical-replication"])
 
 type AstNode = { type: string; start: number; end: number; [key: string]: any }
 
@@ -54,24 +56,37 @@ function liveCalls(code: string, file: string, moduleId: string, ssr: boolean) {
   return { code: output.toString(), map: output.generateMap({ hires: true, source: file }) }
 }
 
-export function lyn(): Plugin {
+export interface LynPluginOptions {
+  app?: string
+}
+
+export function lyn(options: LynPluginOptions = {}): Plugin {
+  const app = options.app ?? "/src/App.tsx"
   let root = process.cwd()
   return {
     name: "lyn",
     enforce: "pre",
-    config: () => ({
+    config: (_, env) => ({
       ssr: { external: ["lyn"] },
       optimizeDeps: { exclude: ["lyn"], include: ["lyn > devalue", "react-dom/client"] },
+      build: env.isSsrBuild ? { rolldownOptions: { external: [/^lyn(\/|$)/] } } : undefined,
     }),
     configResolved(config) {
       root = config.root
     },
-    resolveId(id) {
-      if (id === MODULES_ID) return "\0" + MODULES_ID
+    resolveId(id, importer, resolveOptions) {
+      if (id === MODULES_ID || id === SERVER_ENTRY_ID) return "\0" + id
+      if (!resolveOptions?.ssr && importer && SERVER_ONLY.has(id))
+        this.error(
+          `lyn: "${id}" is server-only but is imported by browser code in ${relative(root, importer)}. ` +
+            `Move server code into a *.lyn.ts module or a live() loader.`,
+        )
     },
     load(id) {
       if (id === "\0" + MODULES_ID)
-        return `export default import.meta.glob(["/**/*.lyn.{ts,tsx,js,jsx}", "!**/node_modules/**"], { eager: true })`
+        return `export default import.meta.glob(["/**/*.lyn.{ts,tsx,js,jsx}", "!**/node_modules/**", "!/dist/**"], { eager: true })`
+      if (id === "\0" + SERVER_ENTRY_ID)
+        return `import ${JSON.stringify(MODULES_ID)}\nexport { default as App } from ${JSON.stringify(app)}\n`
     },
     transform(code, id, options) {
       const file = id.split("?")[0]!
