@@ -195,14 +195,17 @@ export class PostgresAdapter implements Adapter {
     const clients = [leader]
     const idle: pg.PoolClient[] = []
     const waiting: ((client: pg.PoolClient) => void)[] = []
-    let exported: Promise<string> | undefined
+    let exported = ""
     let opening = 0
     try {
       const deadline = Date.now() + 10_000
       for (let attempt = 0; ; attempt++) {
         await leader.query("begin isolation level repeatable read read only")
-        const { rows } = await leader.query("select pg_current_snapshot()::text as snapshot")
-        if (xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) break
+        const { rows } = await leader.query("select pg_current_snapshot()::text as snapshot, pg_export_snapshot() as exported")
+        if (xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) {
+          exported = rows[0].exported
+          break
+        }
         await leader.query("rollback")
         if (Date.now() > deadline) throw new Error(`lyn: committed transactions ${xids.join(", ")} never became visible`)
         await sleep(Math.min(50, 1 + attempt))
@@ -217,8 +220,7 @@ export class PostgresAdapter implements Adapter {
         if (!canGrow()) return new Promise((resolve) => waiting.push(resolve))
         opening++
         try {
-          exported ??= leader.query("select pg_export_snapshot() as id").then((result) => result.rows[0].id as string)
-          const id = await exported
+          const id = exported
           const client = await this.pool.connectDirect()
           clients.push(client)
           await client.query(`begin isolation level repeatable read read only; set transaction snapshot ${client.escapeLiteral(id)}`)

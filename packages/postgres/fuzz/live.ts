@@ -262,6 +262,19 @@ async function main() {
   const engine = Engine.for(adapter)
   await engine.ready
 
+  const overlapErrors = new Set<string>()
+  for (let round = 0; round < 10; round++)
+    await adapter.snapshot([], (read) =>
+      Promise.all(
+        Array.from({ length: 12 }, async (_, index) => {
+          await sleep(index * 2)
+          const result = await read({ session: null }, async () => (await adapter.pool.query(`select pg_sleep(${(index % 4) * 0.005}), 1 as n`)).rows)
+          if (!result.ok) overlapErrors.add(String((result as { error: Error }).error?.message))
+        }),
+      ),
+    )
+  if (overlapErrors.size) failures.push(`overlapping reads in one snapshot failed: ${[...overlapErrors].join("; ")}`)
+
   const nestedProbe = await engine
     .mutate(
       {
