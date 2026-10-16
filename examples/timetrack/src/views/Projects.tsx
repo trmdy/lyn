@@ -1,12 +1,8 @@
-import { live, useMutation, useQuery, uuid, type OptimisticStore } from "@lyn/react"
-import { desc, eq } from "drizzle-orm"
+import { useMutation, useQuery, uuid, type OptimisticStore } from "@lyn/react"
 import { useState, type FormEvent } from "react"
 import * as catalog from "../catalog.lyn"
-import { db, pg } from "../db"
-import { customers, projects, tasks, timeEntries, users } from "../db/schema"
 import { Link, type Route } from "../lib/router"
 import { dayOf, formatDay, formatHours, formatTime } from "../lib/time"
-import { signedIn } from "../session"
 import { Avatar, currency, Dot, Empty } from "./shared"
 
 type Overview = Awaited<ReturnType<typeof useOverview>>
@@ -306,152 +302,99 @@ function ProjectRow({ project, people, isAdmin }: { project: Project; people: { 
   )
 }
 
-const ProjectDetail = live(
-  ({ session }, { projectId }: { projectId: string }) => {
-    signedIn(session)
-    return {
-      project: db
-        .select({
-          id: projects.id,
-          name: projects.name,
-          code: projects.code,
-          color: projects.color,
-          billable: projects.billable,
-          budgetHours: projects.budgetHours,
-          hourlyRate: projects.hourlyRate,
-          customerName: customers.name,
-          defaultRate: customers.defaultRate,
-        })
-        .from(projects)
-        .innerJoin(customers, eq(customers.id, projects.customerId))
-        .where(eq(projects.id, projectId))
-        .then(([row]) => row ?? null),
-      people: pg.sql<{ id: string; name: string; color: string; hours: number }>`
-        select u.id, u.name, u.color, sum(extract(epoch from e.ended_at - e.started_at))::float / 3600 as hours
-        from time_entries e join users u on u.id = e.user_id
-        where e.project_id = ${projectId} and e.ended_at is not null
-        group by u.id
-        order by hours desc
-      `,
-      weeks: pg.sql<{ week: string; hours: number }>`
-        select to_char(date_trunc('week', e.started_at at time zone 'Europe/Oslo'), 'YYYY-MM-DD') as week,
-               sum(extract(epoch from e.ended_at - e.started_at))::float / 3600 as hours
-        from time_entries e
-        where e.project_id = ${projectId} and e.ended_at is not null
-        group by 1
-        order by 1
-      `,
-      recent: db
-        .select({
-          id: timeEntries.id,
-          description: timeEntries.description,
-          startedAt: timeEntries.startedAt,
-          endedAt: timeEntries.endedAt,
-          userName: users.name,
-          userColor: users.color,
-          taskName: tasks.name,
-        })
-        .from(timeEntries)
-        .innerJoin(users, eq(users.id, timeEntries.userId))
-        .leftJoin(tasks, eq(tasks.id, timeEntries.taskId))
-        .where(eq(timeEntries.projectId, projectId))
-        .orderBy(desc(timeEntries.startedAt))
-        .limit(8),
-    }
-  },
-  function ProjectDetail({ project, people, weeks, recent }) {
-    if (!project) return <Empty>This project does not exist.</Empty>
-    const used = people.reduce((sum, person) => sum + person.hours, 0)
-    const rate = project.hourlyRate ?? project.defaultRate
-    let running = 0
-    const cumulative = weeks.map((week) => ({ week: week.week, total: (running += week.hours) }))
-    const top = Math.max(project.budgetHours ?? 0, used, 1) * 1.1
-    const width = 1100
-    const height = 220
-    const x = (index: number) => (cumulative.length > 1 ? (index / (cumulative.length - 1)) * width : width / 2)
-    const y = (hours: number) => height - (hours / top) * height
-    return (
-      <div className="detail">
-        <div className="detail-head">
-          <Dot color={project.color} />
-          <div>
-            <h2>{project.name}</h2>
-            <span className="muted">
-              {project.customerName} · {project.code} · {project.billable && rate ? `${currency.format(rate)}/h` : "non-billable"}
-            </span>
-          </div>
-        </div>
-        <div className="stats">
-          <div>
-            <span className="muted">Used</span>
-            <strong>{formatHours(used)} h</strong>
-          </div>
-          <div>
-            <span className="muted">Budget</span>
-            <strong>{project.budgetHours ? `${project.budgetHours} h` : "—"}</strong>
-          </div>
-          <div>
-            <span className="muted">Remaining</span>
-            <strong className={project.budgetHours && used > project.budgetHours ? "over-text" : ""}>
-              {project.budgetHours ? `${formatHours(project.budgetHours - used)} h` : "—"}
-            </strong>
-          </div>
-          <div>
-            <span className="muted">Value</span>
-            <strong>{currency.format(project.billable ? used * rate : 0)}</strong>
-          </div>
-        </div>
-        <div className="card">
-          <h3>Burn-up</h3>
-          <svg viewBox={`-30 -10 ${width + 40} ${height + 30}`} className="burnup">
-            {project.budgetHours && (
-              <>
-                <line x1={0} x2={width} y1={y(project.budgetHours)} y2={y(project.budgetHours)} className="budget-line" />
-                <text x={width} y={y(project.budgetHours) - 4} textAnchor="end" className="axis">
-                  budget {project.budgetHours} h
-                </text>
-              </>
-            )}
-            <polyline points={cumulative.map((point, index) => `${x(index)},${y(point.total)}`).join(" ")} style={{ stroke: project.color }} />
-            {cumulative.map((point, index) => (
-              <g key={point.week}>
-                <circle cx={x(index)} cy={y(point.total)} r={3} style={{ fill: project.color }} />
-                <text x={x(index)} y={height + 16} textAnchor="middle" className="axis">
-                  {formatDay(point.week).replace(/^\w+ /, "")}
-                </text>
-              </g>
-            ))}
-          </svg>
-        </div>
-        <div className="detail-grid">
-          <div className="card">
-            <h3>People</h3>
-            {people.map((person) => (
-              <div key={person.id} className="person">
-                <Avatar name={person.name} color={person.color} />
-                <div className="person-bar">
-                  <div style={{ width: `${(person.hours / Math.max(used, 1)) * 100}%`, background: person.color }} />
-                </div>
-                <span>{formatHours(person.hours)}</span>
-              </div>
-            ))}
-            {!people.length && <Empty>No time yet.</Empty>}
-          </div>
-          <div className="card">
-            <h3>Latest entries</h3>
-            {recent.map((entry) => (
-              <div key={entry.id} className="recent">
-                <Avatar name={entry.userName} color={entry.userColor} size={20} />
-                <span className="recent-what">{entry.description || entry.taskName || "—"}</span>
-                <span className="muted small">
-                  {formatDay(dayOf(entry.startedAt))} {formatTime(entry.startedAt)}
-                  {entry.endedAt ? `–${formatTime(entry.endedAt)}` : " · running"}
-                </span>
-              </div>
-            ))}
-          </div>
+function ProjectDetail({ projectId }: { projectId: string }) {
+  const { project, people, weeks, recent } = useQuery(catalog.detail, { projectId })
+  if (!project) return <Empty>This project does not exist.</Empty>
+  const used = people.reduce((sum, person) => sum + person.hours, 0)
+  const rate = project.hourlyRate ?? project.defaultRate
+  let running = 0
+  const cumulative = weeks.map((week) => ({ week: week.week, total: (running += week.hours) }))
+  const top = Math.max(project.budgetHours ?? 0, used, 1) * 1.1
+  const width = 1100
+  const height = 220
+  const x = (index: number) => (cumulative.length > 1 ? (index / (cumulative.length - 1)) * width : width / 2)
+  const y = (hours: number) => height - (hours / top) * height
+  return (
+    <div className="detail">
+      <div className="detail-head">
+        <Dot color={project.color} />
+        <div>
+          <h2>{project.name}</h2>
+          <span className="muted">
+            {project.customerName} · {project.code} · {project.billable && rate ? `${currency.format(rate)}/h` : "non-billable"}
+          </span>
         </div>
       </div>
-    )
-  },
-)
+      <div className="stats">
+        <div>
+          <span className="muted">Used</span>
+          <strong>{formatHours(used)} h</strong>
+        </div>
+        <div>
+          <span className="muted">Budget</span>
+          <strong>{project.budgetHours ? `${project.budgetHours} h` : "—"}</strong>
+        </div>
+        <div>
+          <span className="muted">Remaining</span>
+          <strong className={project.budgetHours && used > project.budgetHours ? "over-text" : ""}>
+            {project.budgetHours ? `${formatHours(project.budgetHours - used)} h` : "—"}
+          </strong>
+        </div>
+        <div>
+          <span className="muted">Value</span>
+          <strong>{currency.format(project.billable ? used * rate : 0)}</strong>
+        </div>
+      </div>
+      <div className="card">
+        <h3>Burn-up</h3>
+        <svg viewBox={`-30 -10 ${width + 40} ${height + 30}`} className="burnup">
+          {project.budgetHours && (
+            <>
+              <line x1={0} x2={width} y1={y(project.budgetHours)} y2={y(project.budgetHours)} className="budget-line" />
+              <text x={width} y={y(project.budgetHours) - 4} textAnchor="end" className="axis">
+                budget {project.budgetHours} h
+              </text>
+            </>
+          )}
+          <polyline points={cumulative.map((point, index) => `${x(index)},${y(point.total)}`).join(" ")} style={{ stroke: project.color }} />
+          {cumulative.map((point, index) => (
+            <g key={point.week}>
+              <circle cx={x(index)} cy={y(point.total)} r={3} style={{ fill: project.color }} />
+              <text x={x(index)} y={height + 16} textAnchor="middle" className="axis">
+                {formatDay(point.week).replace(/^\w+ /, "")}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div className="detail-grid">
+        <div className="card">
+          <h3>People</h3>
+          {people.map((person) => (
+            <div key={person.id} className="person">
+              <Avatar name={person.name} color={person.color} />
+              <div className="person-bar">
+                <div style={{ width: `${(person.hours / Math.max(used, 1)) * 100}%`, background: person.color }} />
+              </div>
+              <span>{formatHours(person.hours)}</span>
+            </div>
+          ))}
+          {!people.length && <Empty>No time yet.</Empty>}
+        </div>
+        <div className="card">
+          <h3>Latest entries</h3>
+          {recent.map((entry) => (
+            <div key={entry.id} className="recent">
+              <Avatar name={entry.userName} color={entry.userColor} size={20} />
+              <span className="recent-what">{entry.description || entry.taskName || "—"}</span>
+              <span className="muted small">
+                {formatDay(dayOf(entry.startedAt))} {formatTime(entry.startedAt)}
+                {entry.endedAt ? `–${formatTime(entry.endedAt)}` : " · running"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}

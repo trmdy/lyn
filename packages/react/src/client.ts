@@ -1,4 +1,7 @@
 import { applyRows, decode, encode, queryKey, type ServerFrame } from "@lyn/core/wire"
+import type { QueryRef } from "@lyn/core"
+
+export type ArgsParam<A> = Record<string, never> extends A ? [args?: A] : [args: A]
 
 type Ref = { name: string }
 
@@ -81,12 +84,10 @@ export class LynClient {
     for (const [name, args, value, message, fingerprint] of decode<[string, unknown, unknown, string?, string?][]>(data)) {
       const entry = this.entry(name, args)
       entry.hydrationSnapshot = { value, error: message === undefined ? undefined : new Error(message) }
-      clearTimeout(entry.gcTimer)
       if (entry.server || entry.error) continue
       if (message === undefined) entry.server = { value, version: 0, fingerprint }
       else entry.error = new Error(message)
       entry.resolveReady()
-      clearTimeout(entry.gcTimer)
       touched.add(entry)
     }
     this.#recompute(touched)
@@ -94,6 +95,10 @@ export class LynClient {
 
   entry(name: string, args: unknown): Entry {
     return this.#entries.get(queryKey(name, args)) ?? this.#create(name, args)
+  }
+
+  prefetch<A, R>(query: QueryRef<A, R>, ...[args]: ArgsParam<A>): void {
+    this.entry(query.name, args ?? {})
   }
 
   retain(entry: Entry) {
@@ -221,6 +226,11 @@ export class LynClient {
   reconnect() {
     clearTimeout(this.#reconnectTimer)
     this.#source?.close()
+    for (const entry of this.#entries.values()) {
+      if (entry.refs || !entry.error) continue
+      clearTimeout(entry.gcTimer)
+      this.#entries.delete(entry.key)
+    }
     this.#connect()
   }
 

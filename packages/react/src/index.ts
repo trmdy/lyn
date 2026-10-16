@@ -13,7 +13,7 @@ import {
 import { hydrateRoot } from "react-dom/client"
 import type { ActionRef, MutationRef, QueryCtx, QueryRef } from "@lyn/core"
 import { registry } from "@lyn/core/registry"
-import { LynClient, type OptimisticUpdate } from "./client.ts"
+import { LynClient, type ArgsParam, type OptimisticUpdate } from "./client.ts"
 
 export { LynClient, uuid, type OptimisticStore, type OptimisticUpdate } from "./client.ts"
 export { useNow } from "./now.ts"
@@ -29,8 +29,6 @@ export function useLyn(): LynClient {
   if (!client) throw new Error("lyn: wrap your app in <LynProvider>")
   return client
 }
-
-type ArgsParam<A> = Record<string, never> extends A ? [args?: A] : [args: A]
 
 export function useQuery<A, R>(query: QueryRef<A, R>, ...[args]: ArgsParam<A>): Awaited<R> {
   const client = useLyn()

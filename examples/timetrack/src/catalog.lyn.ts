@@ -1,8 +1,8 @@
 import { mutation, query } from "@lyn/core"
-import { and, asc, eq, inArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import { z } from "zod"
 import { db, pg } from "./db"
-import { customers, projectMembers, projects, tasks, users } from "./db/schema"
+import { customers, projectMembers, projects, tasks, timeEntries, users } from "./db/schema"
 import { admin, signedIn } from "./session"
 
 const color = z.string().regex(/^#[0-9a-f]{6}$/i)
@@ -160,5 +160,62 @@ export const people = query({
   handler: ({ session }) => {
     signedIn(session)
     return db.select({ id: users.id, name: users.name, color: users.color }).from(users).orderBy(asc(users.name))
+  },
+})
+
+export const detail = query({
+  args: z.object({ projectId: z.uuid() }),
+  handler: async ({ session }, { projectId }) => {
+    signedIn(session)
+    const [project, people, weeks, recent] = await Promise.all([
+      db
+        .select({
+          id: projects.id,
+          name: projects.name,
+          code: projects.code,
+          color: projects.color,
+          billable: projects.billable,
+          budgetHours: projects.budgetHours,
+          hourlyRate: projects.hourlyRate,
+          customerName: customers.name,
+          defaultRate: customers.defaultRate,
+        })
+        .from(projects)
+        .innerJoin(customers, eq(customers.id, projects.customerId))
+        .where(eq(projects.id, projectId))
+        .then(([row]) => row ?? null),
+      pg.sql<{ id: string; name: string; color: string; hours: number }>`
+        select u.id, u.name, u.color, sum(extract(epoch from e.ended_at - e.started_at))::float / 3600 as hours
+        from time_entries e join users u on u.id = e.user_id
+        where e.project_id = ${projectId} and e.ended_at is not null
+        group by u.id
+        order by hours desc
+      `,
+      pg.sql<{ week: string; hours: number }>`
+        select to_char(date_trunc('week', e.started_at at time zone 'Europe/Oslo'), 'YYYY-MM-DD') as week,
+               sum(extract(epoch from e.ended_at - e.started_at))::float / 3600 as hours
+        from time_entries e
+        where e.project_id = ${projectId} and e.ended_at is not null
+        group by 1
+        order by 1
+      `,
+      db
+        .select({
+          id: timeEntries.id,
+          description: timeEntries.description,
+          startedAt: timeEntries.startedAt,
+          endedAt: timeEntries.endedAt,
+          userName: users.name,
+          userColor: users.color,
+          taskName: tasks.name,
+        })
+        .from(timeEntries)
+        .innerJoin(users, eq(users.id, timeEntries.userId))
+        .leftJoin(tasks, eq(tasks.id, timeEntries.taskId))
+        .where(eq(timeEntries.projectId, projectId))
+        .orderBy(desc(timeEntries.startedAt))
+        .limit(8),
+    ])
+    return { project, people, weeks, recent }
   },
 })

@@ -22,9 +22,9 @@ const entryColumns = {
 }
 
 export const week = query({
-  args: z.object({ userId: z.uuid(), start: z.string().regex(DAY_PATTERN) }),
+  args: z.object({ userId: z.uuid().optional(), start: z.string().regex(DAY_PATTERN) }),
   handler: ({ session }, { userId, start }) => {
-    signedIn(session)
+    const user = signedIn(session)
     return db
       .select(entryColumns)
       .from(timeEntries)
@@ -33,7 +33,7 @@ export const week = query({
       .leftJoin(tasks, eq(tasks.id, timeEntries.taskId))
       .where(
         and(
-          eq(timeEntries.userId, userId),
+          eq(timeEntries.userId, userId ?? user.userId),
           lt(timeEntries.startedAt, instant(addDays(start, 7), 0)),
           or(isNull(timeEntries.endedAt), gt(timeEntries.endedAt, instant(start, 0))),
         ),
@@ -43,15 +43,15 @@ export const week = query({
 })
 
 export const month = query({
-  args: z.object({ userId: z.uuid(), month: z.string().regex(MONTH_PATTERN) }),
+  args: z.object({ userId: z.uuid().optional(), month: z.string().regex(MONTH_PATTERN) }),
   handler: ({ session }, args) => {
-    signedIn(session)
+    const user = signedIn(session)
     return pg.sql<{ day: string; hours: number; billableHours: number }>`
       select to_char(started_at at time zone 'Europe/Oslo', 'YYYY-MM-DD') as day,
              sum(extract(epoch from ended_at - started_at))::float / 3600 as hours,
              coalesce(sum(extract(epoch from ended_at - started_at)) filter (where billable), 0)::float / 3600 as "billableHours"
       from time_entries
-      where user_id = ${args.userId}
+      where user_id = ${args.userId ?? user.userId}
         and ended_at is not null
         and started_at >= ${instant(startOfMonth(args.month), 0)}
         and started_at < ${instant(startOfMonth(addMonths(args.month, 1)), 0)}

@@ -10,7 +10,7 @@ export function MonthView({ route, me }: { route: Extract<Route, { name: "month"
   const currentDay = today(useNow(30_000))
   const members = useQuery(team.members)
   const userId = route.user ?? me.id
-  const totals = useQuery(entries.month, { userId, month: route.month })
+  const totals = useQuery(entries.month, { userId: route.user, month: route.month })
   const byDay = new Map(totals.map((row) => [row.day, row]))
   const days = daysInMonth(route.month)
   const first = startOfWeek(startOfMonth(route.month))

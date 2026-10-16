@@ -1,6 +1,7 @@
-import { useQuery } from "@lyn/react"
+import { useLyn, useQuery } from "@lyn/react"
 import { Suspense, useEffect, useState } from "react"
 import * as team from "./team.lyn"
+import { prefetchRoute } from "./lib/prefetch"
 import { Router, useRouter } from "./lib/router"
 import { MonthView } from "./views/Month"
 import { ProjectsView } from "./views/Projects"
@@ -18,8 +19,9 @@ export default function App({ url }: { url: string }) {
 }
 
 function Shell() {
-  const me = useQuery(team.me)
   const { path, route, pending } = useRouter()
+  prefetchRoute(useLyn(), route)
+  const me = useQuery(team.me)
   const [drawer, setDrawer] = useState(false)
   useEffect(() => {
     setDrawer(false)

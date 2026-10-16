@@ -1,6 +1,7 @@
-import { useNow } from "@lyn/react"
+import { useLyn, useNow } from "@lyn/react"
 import { createContext, use, useCallback, useEffect, useState, useTransition, type AnchorHTMLAttributes, type ReactNode } from "react"
 import { DAY_PATTERN, MONTH_PATTERN, addDays, monthOf, startOfWeek, today, type Day } from "./time"
+import { prefetchRoute } from "./prefetch"
 
 export type Route =
   | { name: "week"; day: Day; user?: string }
@@ -33,6 +34,7 @@ interface RouterValue {
 const RouterContext = createContext<RouterValue | null>(null)
 
 export function Router({ url, children }: { url: string; children: ReactNode }) {
+  const client = useLyn()
   const [path, setPath] = useState(url)
   const currentDay = today(useNow(30_000))
   const [pending, startTransition] = useTransition()
@@ -42,9 +44,10 @@ export function Router({ url, children }: { url: string; children: ReactNode }) 
     return () => removeEventListener("popstate", onPop)
   }, [])
   const navigate = useCallback((to: string) => {
+    prefetchRoute(client, parseRoute(to, currentDay))
     history.pushState(null, "", to)
     startTransition(() => setPath(to))
-  }, [])
+  }, [client, currentDay])
   const section = path.split(/[/?]/)[1]
   useEffect(() => {
     window.scrollTo({ top: 0 })

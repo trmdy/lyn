@@ -26,7 +26,7 @@ const SNAP = 15
 
 export type Entry = Awaited<ReturnType<typeof useWeek>>[number]
 
-function useWeek(userId: string, start: Day) {
+function useWeek(userId: string | undefined, start: Day) {
   return useQuery(entries.week, { userId, start })
 }
 
@@ -52,7 +52,7 @@ function rowFor(entry: { id: string; projectId: string; taskId: string | null; d
   }
 }
 
-function patchWeek(store: OptimisticStore, key: { userId: string; start: Day }, change: (rows: Entry[]) => Entry[]) {
+function patchWeek(store: OptimisticStore, key: { userId: string | undefined; start: Day }, change: (rows: Entry[]) => Entry[]) {
   const current = store.get(entries.week, key)
   if (current) store.set(entries.week, key, change(current).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime()))
 }
@@ -74,8 +74,8 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
   const projects = usePickable()
   const userId = route.user ?? me.id
   const start = startOfWeek(route.day)
-  const key = { userId, start }
-  const rows = useWeek(userId, start)
+  const key = { userId: route.user, start }
+  const rows = useWeek(route.user, start)
   const editable = userId === me.id
   const now = useNow(30_000)
   const currentDay = today(now)
