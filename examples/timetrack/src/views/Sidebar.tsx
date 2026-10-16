@@ -1,9 +1,8 @@
-import { useLyn, useQuery } from "@lyn/react"
+import { useNow, useLyn, useQuery } from "@lyn/react"
 import * as entries from "../entries.lyn"
 import * as team from "../team.lyn"
-import { useNow } from "../lib/hooks"
 import { Link, useRouter } from "../lib/router"
-import { formatDuration, monthOf, startOfWeek, today } from "../lib/time"
+import { formatDuration, monthOf, startOfWeek, today, type Day } from "../lib/time"
 import { Avatar, Dot } from "./shared"
 
 export function useSignIn() {
@@ -14,18 +13,19 @@ export function useSignIn() {
   }
 }
 
-export const navLinks = () => [
-  { name: "week", label: "Week", icon: "▦", to: `/week/${startOfWeek(today())}` },
-  { name: "month", label: "Month", icon: "▤", to: `/month/${monthOf(today())}` },
+export const navLinks = (day: Day) => [
+  { name: "week", label: "Week", icon: "▦", to: `/week/${startOfWeek(day)}` },
+  { name: "month", label: "Month", icon: "▤", to: `/month/${monthOf(day)}` },
   { name: "projects", label: "Projects", icon: "◫", to: "/projects" },
   { name: "reports", label: "Reports", icon: "▥", to: "/reports" },
 ]
 
 export function TabBar() {
   const { route } = useRouter()
+  const currentDay = today(useNow(30_000))
   return (
     <nav className="tabbar">
-      {navLinks().map((link) => (
+      {navLinks(currentDay).map((link) => (
         <Link key={link.name} to={link.to} className={route.name === link.name ? "active" : ""}>
           <span aria-hidden>{link.icon}</span>
           {link.label}
@@ -57,9 +57,10 @@ export function MobileHeader({ onMenu }: { onMenu: () => void }) {
 
 export function Sidebar({ me }: { me: { id: string; name: string; role: string; color: string } }) {
   const { route } = useRouter()
+  const currentDay = today(useNow(30_000))
   const members = useQuery(team.members)
   const signIn = useSignIn()
-  const links = navLinks()
+  const links = navLinks(currentDay)
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -106,7 +107,7 @@ function WorkingNow() {
               <div className="muted small working-meta">
                 <Dot color={entry.projectColor} />
                 <span>{entry.projectName}</span>
-                <time suppressHydrationWarning>{formatDuration(now - entry.startedAt.getTime())}</time>
+                <time>{formatDuration(now - entry.startedAt.getTime())}</time>
               </div>
             </div>
           </div>

@@ -40,7 +40,7 @@ app.post("/logout", (c) => {
 app.get("/api/export.csv", async (c) => {
   const user = await currentUser(c)
   if (!user) return c.text("Unauthorized", 401)
-  const from = DAY_PATTERN.test(c.req.query("from") ?? "") ? c.req.query("from")! : startOfWeek(today())
+  const from = DAY_PATTERN.test(c.req.query("from") ?? "") ? c.req.query("from")! : startOfWeek(today(Date.now()))
   const to = DAY_PATTERN.test(c.req.query("to") ?? "") ? c.req.query("to")! : addDays(from, 6)
   const rows = await db
     .select({

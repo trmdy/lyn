@@ -1,8 +1,7 @@
-import { useMutation, useQuery, uuid, type OptimisticStore } from "@lyn/react"
+import { useNow, useMutation, useQuery, uuid, type OptimisticStore } from "@lyn/react"
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import * as entries from "../entries.lyn"
 import * as team from "../team.lyn"
-import { useNow } from "../lib/hooks"
 import { Link, useRouter, type Route } from "../lib/router"
 import {
   addDays,
@@ -79,13 +78,14 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
   const rows = useWeek(userId, start)
   const editable = userId === me.id
   const now = useNow(30_000)
+  const currentDay = today(now)
   const days = Array.from({ length: 7 }, (_, index) => addDays(start, index))
   const [drag, setDrag] = useState<Drag | null>(null)
   const latestDrag = useRef(drag)
   latestDrag.current = drag
   const [draft, setDraft] = useState<Draft | null>(null)
   const [focusDay, setFocusDay] = useState(route.day)
-  const focus = days.includes(focusDay) ? focusDay : days.includes(today()) ? today() : start
+  const focus = days.includes(focusDay) ? focusDay : days.includes(currentDay) ? currentDay : start
   const tap = useRef<{ x: number; y: number; action: () => void } | null>(null)
   const grid = useRef<HTMLDivElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
@@ -194,7 +194,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
           <Link className="button" to={`/week/${addDays(start, -7)}${query}`}>
             ←
           </Link>
-          <Link className="button" to={`/week/${startOfWeek(today())}${query}`}>
+          <Link className="button" to={`/week/${startOfWeek(currentDay)}${query}`}>
             Today
           </Link>
           <Link className="button" to={`/week/${addDays(start, 7)}${query}`}>
@@ -227,7 +227,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
           <button
             key={day}
             type="button"
-            className={`${day === today() ? "today" : ""} ${day === focus ? "focus" : ""}`}
+            className={`${day === currentDay ? "today" : ""} ${day === focus ? "focus" : ""}`}
             onClick={() => setFocusDay(day)}
           >
             <span>
@@ -273,7 +273,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
               return (
                 <div
                   key={day}
-                  className={`column ${day === today() ? "today" : ""} ${day === focus ? "focus" : ""} ${editable ? "editable" : ""}`}
+                  className={`column ${day === currentDay ? "today" : ""} ${day === focus ? "focus" : ""} ${editable ? "editable" : ""}`}
                   onPointerDown={(event: ReactPointerEvent) => {
                     if (!editable || event.target !== event.currentTarget) return
                     const from = minuteAt(event.clientY)
@@ -315,7 +315,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
                         {entry.projectName}
                         {entry.taskName ? ` · ${entry.taskName}` : ""}
                       </span>
-                      <span className="entry-time" suppressHydrationWarning>
+                      <span className="entry-time">
                         {formatTime(entry.startedAt)}–{entry.endedAt ? formatTime(entry.endedAt) : "now"}
                       </span>
                       {editable && entry.endedAt && (
@@ -338,7 +338,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
                     </div>
                   )}
                   {day === dayOf(new Date(now)) && (
-                    <div className="now-line" style={{ top: (minutesOf(new Date(now)) - HOUR_START * 60) * MINUTE_PX }} suppressHydrationWarning />
+                    <div className="now-line" style={{ top: (minutesOf(new Date(now)) - HOUR_START * 60) * MINUTE_PX }} />
                   )}
                 </div>
               )

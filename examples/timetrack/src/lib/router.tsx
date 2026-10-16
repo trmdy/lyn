@@ -1,3 +1,4 @@
+import { useNow } from "@lyn/react"
 import { createContext, use, useCallback, useEffect, useState, useTransition, type AnchorHTMLAttributes, type ReactNode } from "react"
 import { DAY_PATTERN, MONTH_PATTERN, addDays, monthOf, startOfWeek, today, type Day } from "./time"
 
@@ -7,19 +8,19 @@ export type Route =
   | { name: "projects"; projectId?: string }
   | { name: "reports"; from: Day; to: Day; user?: string }
 
-export function parseRoute(path: string): Route {
+export function parseRoute(path: string, currentDay: Day): Route {
   const url = new URL(path, "http://lyn")
   const [section, param] = url.pathname.split("/").filter(Boolean)
   const user = url.searchParams.get("user") ?? undefined
-  if (section === "month") return { name: "month", month: param && MONTH_PATTERN.test(param) ? param : monthOf(today()), user }
+  if (section === "month") return { name: "month", month: param && MONTH_PATTERN.test(param) ? param : monthOf(currentDay), user }
   if (section === "projects") return { name: "projects", projectId: param }
   if (section === "reports") {
     const from = url.searchParams.get("from") ?? ""
     const to = url.searchParams.get("to") ?? ""
-    const start = DAY_PATTERN.test(from) ? from : startOfWeek(today())
+    const start = DAY_PATTERN.test(from) ? from : startOfWeek(currentDay)
     return { name: "reports", from: start, to: DAY_PATTERN.test(to) ? to : addDays(start, 6), user }
   }
-  return { name: "week", day: param && DAY_PATTERN.test(param) ? param : today(), user }
+  return { name: "week", day: param && DAY_PATTERN.test(param) ? param : currentDay, user }
 }
 
 interface RouterValue {
@@ -33,6 +34,7 @@ const RouterContext = createContext<RouterValue | null>(null)
 
 export function Router({ url, children }: { url: string; children: ReactNode }) {
   const [path, setPath] = useState(url)
+  const currentDay = today(useNow(30_000))
   const [pending, startTransition] = useTransition()
   useEffect(() => {
     const onPop = () => startTransition(() => setPath(location.pathname + location.search))
@@ -47,7 +49,7 @@ export function Router({ url, children }: { url: string; children: ReactNode }) 
   useEffect(() => {
     window.scrollTo({ top: 0 })
   }, [section])
-  return <RouterContext value={{ path, route: parseRoute(path), pending, navigate }}>{children}</RouterContext>
+  return <RouterContext value={{ path, route: parseRoute(path, currentDay), pending, navigate }}>{children}</RouterContext>
 }
 
 export function useRouter() {

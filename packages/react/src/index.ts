@@ -16,6 +16,7 @@ import { registry } from "@lyn/core/registry"
 import { LynClient, type OptimisticUpdate } from "./client.ts"
 
 export { LynClient, uuid, type OptimisticStore, type OptimisticUpdate } from "./client.ts"
+export { useNow } from "./now.ts"
 
 const LynContext = createContext<LynClient | null>(null)
 
@@ -92,6 +93,7 @@ declare global {
     __LYN_STATE__?: string
     __LYN_QUEUE__?: { push: (...entries: string[]) => number }
     __LYN_BASE__?: string
+    __LYN_TIME__?: number
   }
 }
 
@@ -100,7 +102,7 @@ export function hydrate(
   options: { container?: Element; baseUrl?: string } = {},
 ) {
   const container = options.container ?? document.getElementById("root")!
-  const client = new LynClient({ initial: window.__LYN_STATE__, baseUrl: options.baseUrl ?? window.__LYN_BASE__ ?? "" })
+  const client = new LynClient({ initial: window.__LYN_STATE__, baseUrl: options.baseUrl ?? window.__LYN_BASE__ ?? "", renderTime: window.__LYN_TIME__ })
   const queue = window.__LYN_QUEUE__
   if (Array.isArray(queue)) for (const entry of queue) client.ingest(entry)
   window.__LYN_QUEUE__ = {

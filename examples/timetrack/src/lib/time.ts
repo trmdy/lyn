@@ -97,7 +97,7 @@ export function formatDuration(milliseconds: number) {
   return `${Math.floor(seconds / 3600)}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}`
 }
 
-export const today = () => dayOf(new Date())
+export const today = (now: number) => dayOf(new Date(now))
 
 export const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 export const MONTH_PATTERN = /^\d{4}-\d{2}$/

@@ -61,6 +61,8 @@ Each live query (a "group": one query, arguments and session) runs independently
 
 SSR payloads carry a SHA-256 fingerprint of each value’s devalue encoding. The browser includes it in the initial subscription. Core evaluates new groups to establish their current value and read dependencies, or uses an existing group’s value. If its fingerprint matches, an `unchanged` message supplies only the subscription id and group version. The client retains its hydrated value and snapshot identity without notifying listeners. A stale fingerprint receives full `data`; subsequent patches still require the exact `from` version. Fingerprints are cleared when data or patches replace the value, so a later subscription cannot claim an obsolete fingerprint.
 
+`useNow(intervalMs = 1000)` returns milliseconds since the Unix epoch inside a `LynProvider`. Each server render captures one timestamp and sends it in the head script as `window.__LYN_TIME__`. The hook uses that timestamp on the server and during hydration, including delayed Suspense boundaries. After hydration it reads the browser clock immediately and then at the requested interval. Components mounted by client navigation start with the browser clock. Derive dates and calendar highlights from this value rather than reading the clock during render.
+
 ## Build and runtime
 
 - `lyn dev` runs Vite in middleware mode and loads `virtual:lyn/server-entry` per request, so the Hono app and server modules hot-reload. Editing a `*.lyn.ts` file re-runs open live queries.

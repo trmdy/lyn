@@ -1,4 +1,4 @@
-import { useQuery } from "@lyn/react"
+import { useNow, useQuery } from "@lyn/react"
 import * as reports from "../reports.lyn"
 import * as team from "../team.lyn"
 import { Link, useRouter, type Route } from "../lib/router"
@@ -7,10 +7,11 @@ import { Avatar, currency, Dot, Empty } from "./shared"
 
 export function ReportsView({ route }: { route: Extract<Route, { name: "reports" }> }) {
   const { navigate } = useRouter()
+  const currentDay = today(useNow(30_000))
   const members = useQuery(team.members)
   const data = useQuery(reports.summary, { from: route.from, to: route.to, userId: route.user ?? null })
-  const thisWeek = startOfWeek(today())
-  const thisMonth = monthOf(today())
+  const thisWeek = startOfWeek(currentDay)
+  const thisMonth = monthOf(currentDay)
   const presets = [
     { label: "This week", from: thisWeek, to: addDays(thisWeek, 6) },
     { label: "Last week", from: addDays(thisWeek, -7), to: addDays(thisWeek, -1) },

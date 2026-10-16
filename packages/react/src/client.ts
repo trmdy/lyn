@@ -43,6 +43,7 @@ interface PendingMutation {
 }
 
 export interface LynClientOptions {
+  renderTime?: number
   initial?: string
   fetchQuery?: (name: string, args: unknown) => Promise<unknown>
   baseUrl?: string
@@ -50,6 +51,7 @@ export interface LynClientOptions {
 }
 
 export class LynClient {
+  readonly renderTime: number
   readonly #entries = new Map<string, Entry>()
   readonly #bySub = new Map<number, Entry>()
   readonly #fetchQuery?: LynClientOptions["fetchQuery"]
@@ -66,6 +68,7 @@ export class LynClient {
   #reconnectTimer?: ReturnType<typeof setTimeout>
 
   constructor(options: LynClientOptions = {}) {
+    this.renderTime = options.renderTime ?? Date.now()
     this.#fetchQuery = options.fetchQuery
     this.#baseUrl = options.baseUrl ?? ""
     this.#gcTime = options.gcTime ?? 10_000

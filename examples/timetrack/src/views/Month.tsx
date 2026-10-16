@@ -1,4 +1,4 @@
-import { useQuery } from "@lyn/react"
+import { useNow, useQuery } from "@lyn/react"
 import type { CSSProperties } from "react"
 import * as entries from "../entries.lyn"
 import * as team from "../team.lyn"
@@ -7,6 +7,7 @@ import { addDays, addMonths, daysInMonth, formatHours, formatMonth, monthOf, sta
 
 export function MonthView({ route, me }: { route: Extract<Route, { name: "month" }>; me: { id: string } }) {
   const { navigate } = useRouter()
+  const currentDay = today(useNow(30_000))
   const members = useQuery(team.members)
   const userId = route.user ?? me.id
   const totals = useQuery(entries.month, { userId, month: route.month })
@@ -26,7 +27,7 @@ export function MonthView({ route, me }: { route: Extract<Route, { name: "month"
           <Link className="button" to={`/month/${addMonths(route.month, -1)}${query}`}>
             ←
           </Link>
-          <Link className="button" to={`/month/${monthOf(today())}${query}`}>
+          <Link className="button" to={`/month/${monthOf(currentDay)}${query}`}>
             This month
           </Link>
           <Link className="button" to={`/month/${addMonths(route.month, 1)}${query}`}>
@@ -64,7 +65,7 @@ export function MonthView({ route, me }: { route: Extract<Route, { name: "month"
             <Link
               key={day}
               to={`/week/${day}${query}`}
-              className={`month-day ${inMonth ? "" : "outside"} ${day === today() ? "today" : ""}`}
+              className={`month-day ${inMonth ? "" : "outside"} ${day === currentDay ? "today" : ""}`}
               style={{ "--fill": row ? row.hours / max : 0 } as CSSProperties}
             >
               <span className="month-date">{Number(day.slice(8))}</span>

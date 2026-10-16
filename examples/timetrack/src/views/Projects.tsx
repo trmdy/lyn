@@ -443,7 +443,7 @@ const ProjectDetail = live(
               <div key={entry.id} className="recent">
                 <Avatar name={entry.userName} color={entry.userColor} size={20} />
                 <span className="recent-what">{entry.description || entry.taskName || "—"}</span>
-                <span className="muted small" suppressHydrationWarning>
+                <span className="muted small">
                   {formatDay(dayOf(entry.startedAt))} {formatTime(entry.startedAt)}
                   {entry.endedAt ? `–${formatTime(entry.endedAt)}` : " · running"}
                 </span>

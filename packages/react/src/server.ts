@@ -64,8 +64,10 @@ export async function renderPage(
   App: ComponentType<{ url: string }>,
   options: { url: string; baseUrl?: string; signal?: AbortSignal; close?: () => Promise<void>; runQuery: (name: string, args: unknown) => Promise<unknown> },
 ) {
+  const renderTime = Date.now()
   let pending: string[] = []
   const client = new LynClient({
+    renderTime,
     fetchQuery: async (name, args) => {
       try {
         const value = await options.runQuery(name, args)
@@ -122,5 +124,5 @@ export async function renderPage(
     },
   })
   const base = options.baseUrl ? `window.__LYN_BASE__=${script(options.baseUrl)};` : ""
-  return { body, head: `<script>${base}window.__LYN_QUEUE__=[];</script>` }
+  return { body, head: `<script>${base}window.__LYN_TIME__=${renderTime};window.__LYN_QUEUE__=[];</script>` }
 }

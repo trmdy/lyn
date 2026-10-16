@@ -1,7 +1,6 @@
-import { useMutation, useQuery, uuid } from "@lyn/react"
+import { useNow, useMutation, useQuery, uuid } from "@lyn/react"
 import { useLayoutEffect, useRef, useState, type FormEvent } from "react"
 import * as entries from "../entries.lyn"
-import { useNow } from "../lib/hooks"
 import { formatDuration } from "../lib/time"
 import { Dot, ProjectSelect, TaskSelect, usePickable } from "./shared"
 
@@ -75,7 +74,7 @@ export function TimerBar() {
           <TaskSelect project={project} value={taskId} onChange={setTaskId} />
         </>
       )}
-      <time className="elapsed" suppressHydrationWarning>
+      <time className="elapsed">
         {running ? formatDuration(now - running.startedAt.getTime()) : "0:00:00"}
       </time>
       <button className={running ? "stop" : "start"} type="submit">
