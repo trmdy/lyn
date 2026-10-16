@@ -1,0 +1,6 @@
+name = "lyn-timetrack"
+
+[web]
+serve = "pnpm install --frozen-lockfile && pnpm --filter timetrack build && cd examples/timetrack && exec node ../../packages/vite/src/cli.ts start"
+ready_path = "/"
+ready_timeout = "120s"

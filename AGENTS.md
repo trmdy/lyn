@@ -24,6 +24,7 @@ Every change must respect these. If a change pulls against one, raise it instead
 - `packages/vite`: Vite plugin and `lyn` CLI (`dev`, `build`, `start`)
 - `packages/postgres`: Postgres adapter (logical replication, SQL read tracking, RLS sessions)
 - `examples/todos`: reference app (Drizzle queries, raw SQL migrations, Hono auth routes)
+- `examples/timetrack`: larger prototype (team time tracking: week calendar with drag and drop, customers and projects, reports, budget alerts); `pnpm --filter timetrack migrate && pnpm --filter timetrack seed`
 - `docs/architecture.md`: how the pieces fit
 
 ## Working here

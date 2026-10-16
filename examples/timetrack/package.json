@@ -1,0 +1,35 @@
+{
+  "name": "timetrack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "lyn dev",
+    "build": "lyn build",
+    "start": "lyn start",
+    "migrate": "DB=lyn_timetrack sh ../../scripts/db.sh psql -q -f db/schema.sql",
+    "seed": "DB=lyn_timetrack sh ../../scripts/db.sh psql -q -f db/seed.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lyn/core": "workspace:*",
+    "@lyn/hono": "workspace:*",
+    "@lyn/postgres": "workspace:*",
+    "@lyn/react": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.13",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@lyn/vite": "workspace:*",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
