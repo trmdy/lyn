@@ -26,6 +26,7 @@ export interface Entry {
   server?: { value: unknown; version: number }
   snapshot: { value: unknown; error?: Error }
   error?: Error
+  hydrationSnapshot?: Entry["snapshot"]
   ready: Promise<void>
   resolveReady: () => void
   listeners: Set<() => void>
@@ -68,14 +69,24 @@ export class LynClient {
     this.#fetchQuery = options.fetchQuery
     this.#baseUrl = options.baseUrl ?? ""
     this.#gcTime = options.gcTime ?? 10_000
-    if (options.initial)
-      for (const [name, args, value] of decode<[string, unknown, unknown][]>(options.initial)) {
-        const entry = this.#create(name, args)
-        entry.server = { value, version: 0 }
-        entry.snapshot = { value }
-        entry.resolveReady()
-      }
+    if (options.initial) this.ingest(options.initial)
     if (!this.#fetchQuery && typeof EventSource !== "undefined") this.#connect()
+  }
+
+  ingest(data: string) {
+    const touched = new Set<Entry>()
+    for (const [name, args, value, message] of decode<[string, unknown, unknown, string?][]>(data)) {
+      const entry = this.entry(name, args)
+      entry.hydrationSnapshot = { value, error: message === undefined ? undefined : new Error(message) }
+      clearTimeout(entry.gcTimer)
+      if (entry.server || entry.error) continue
+      if (message === undefined) entry.server = { value, version: 0 }
+      else entry.error = new Error(message)
+      entry.resolveReady()
+      clearTimeout(entry.gcTimer)
+      touched.add(entry)
+    }
+    this.#recompute(touched)
   }
 
   entry(name: string, args: unknown): Entry {

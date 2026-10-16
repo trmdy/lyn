@@ -10,8 +10,12 @@ POST /_lyn/subscribe ────▶ engine.subscribe  ──── read() ─�
 POST /_lyn/mutate ───────▶ engine.mutate     ──── write() ──────▶ transaction, write token
                                                  ◀── change batches ── change feed (WAL)
                            engine: affects()? ─── snapshot(after) ──▶ consistent re-run
-GET /anything-else ──────▶ SSR: render App with data, embed state
+GET /anything-else ──────▶ SSR: stream shell, query data, Suspense boundaries
 ```
+
+SSR uses React's `renderToReadableStream`. Hono sends the template head and shell as soon as the shell is ready, then forwards completed Suspense boundaries and finally the template suffix. Queries outside Suspense still hold up the shell. Once streaming starts, later failures cannot change the HTTP status; shell failures return 500.
+
+Each query queues a devalue payload before waking React. The renderer emits queued payloads before the next complete top-level HTML segment, buffering partial tags and raw-text elements so scripts never split React markup. The browser drains this queue during hydration and accepts later entries directly into its cache. Hydration reads the original SSR snapshot even if SSE has already delivered a newer value. Query errors carry `publicMessage` text and recover through client error boundaries. React's streamed boundary reveal requires JavaScript; without it, a pending boundary keeps its fallback.
 
 ## The adapter contract
 

@@ -35,7 +35,7 @@ export function useQuery<A, R>(query: QueryRef<A, R>, ...[args]: ArgsParam<A>): 
   const client = useLyn()
   const entry = client.entry(query.name, args ?? {})
   useEffect(() => client.retain(entry), [client, entry])
-  const snapshot = useSyncExternalStore(entry.subscribe, () => entry.snapshot, () => entry.snapshot)
+  const snapshot = useSyncExternalStore(entry.subscribe, () => entry.snapshot, () => entry.hydrationSnapshot ?? entry.snapshot)
   use(entry.ready)
   if (snapshot.error) throw snapshot.error
   return snapshot.value as Awaited<R>
@@ -90,6 +90,7 @@ export function live(loaderOrId: unknown, Component: ComponentType<any>, compile
 declare global {
   interface Window {
     __LYN_STATE__?: string
+    __LYN_QUEUE__?: { push: (...entries: string[]) => number }
     __LYN_BASE__?: string
   }
 }
@@ -100,6 +101,14 @@ export function hydrate(
 ) {
   const container = options.container ?? document.getElementById("root")!
   const client = new LynClient({ initial: window.__LYN_STATE__, baseUrl: options.baseUrl ?? window.__LYN_BASE__ ?? "" })
+  const queue = window.__LYN_QUEUE__
+  if (Array.isArray(queue)) for (const entry of queue) client.ingest(entry)
+  window.__LYN_QUEUE__ = {
+    push: (...entries) => {
+      for (const entry of entries) client.ingest(entry)
+      return 0
+    },
+  }
   hydrateRoot(container, createElement(LynProvider, { client }, createElement(App, { url: location.pathname + location.search })))
   return client
 }

@@ -89,16 +89,41 @@ export function lyn(options: LynOptions) {
     const url = new URL(c.req.url)
     const path = url.pathname + url.search
     const session = await sessionOf(c)
-    const [page, html] = await Promise.all([
-      renderPage(options.app, {
+    c.header("cache-control", "private, no-store")
+    try {
+      const html = await template(path)
+      const marker = html.indexOf("<!--lyn-app-->")
+      if (marker < 0 || !html.slice(0, marker).includes("</head>")) throw new Error("lyn: template needs </head> before <!--lyn-app-->")
+      const page = await renderPage(options.app, {
         url: path,
         baseUrl: c.req.routePath.replace(/\/?\*$/, ""),
+        signal: c.req.raw.signal,
         runQuery: (name, args) => engine.runQuery(name, args, session),
-      }),
-      template(path),
-    ])
-    c.header("cache-control", "private, no-store")
-    return c.html(html.replace("<!--lyn-app-->", () => page.body).replace("</head>", () => `${page.head}</head>`))
+      })
+      const encoder = new TextEncoder()
+      const reader = page.body.getReader()
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(html.slice(0, marker).replace("</head>", () => `${page.head}</head>`)))
+        },
+        async pull(controller) {
+          try {
+            const { value, done } = await reader.read()
+            if (done) {
+              controller.enqueue(encoder.encode(html.slice(marker + "<!--lyn-app-->".length)))
+              controller.close()
+            } else controller.enqueue(value)
+          } catch (error) {
+            controller.error(error)
+            await reader.cancel(error)
+          }
+        },
+        cancel: (reason) => reader.cancel(reason),
+      })
+      return c.body(body, 200, { "content-type": "text/html; charset=UTF-8" })
+    } catch (error) {
+      return c.text(publicMessage(error), 500)
+    }
   })
 
   return app
