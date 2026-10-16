@@ -13,15 +13,35 @@ const partsFormat = new Intl.DateTimeFormat("en-GB", {
   hourCycle: "h23",
 })
 
+const DAY_MS = 86_400_000
+const dayOffsets = new Map<number, number | null>()
+
+function exactOffset(time: number) {
+  const parts = Object.fromEntries(partsFormat.formatToParts(new Date(time)).map((part) => [part.type, Number(part.value)]))
+  return Date.UTC(parts.year!, parts.month! - 1, parts.day!, parts.hour!, parts.minute!, parts.second!) - (time - (time % 1000))
+}
+
+function zoneOffset(time: number) {
+  const utcDay = Math.floor(time / DAY_MS)
+  let offset = dayOffsets.get(utcDay)
+  if (offset === undefined) {
+    const start = exactOffset(utcDay * DAY_MS)
+    offset = start === exactOffset((utcDay + 1) * DAY_MS - 1000) ? start : null
+    if (dayOffsets.size > 10_000) dayOffsets.clear()
+    dayOffsets.set(utcDay, offset)
+  }
+  return offset ?? exactOffset(time)
+}
+
 function wallClock(date: Date) {
-  const parts = Object.fromEntries(partsFormat.formatToParts(date).map((part) => [part.type, part.value]))
+  const shifted = new Date(date.getTime() + zoneOffset(date.getTime()))
   return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-    second: Number(parts.second),
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
   }
 }
 
