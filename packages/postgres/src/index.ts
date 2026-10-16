@@ -212,8 +212,10 @@ export class PostgresAdapter implements Adapter {
       }
       idle.push(leader)
 
-      const canGrow = () =>
-        clients.length + opening < this.#readers && (this.pool.idleCount > 0 || this.pool.totalCount < (this.#options.max ?? 20))
+      const canGrow = () => {
+        const capacity = this.pool.idleCount + Math.max(0, (this.#options.max ?? 20) - this.pool.totalCount)
+        return clients.length + opening < this.#readers && capacity > this.pool.waitingCount
+      }
       const acquire = async (): Promise<pg.PoolClient> => {
         const free = idle.pop()
         if (free) return free
