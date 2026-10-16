@@ -43,6 +43,10 @@ export function Router({ url, children }: { url: string; children: ReactNode }) 
     history.pushState(null, "", to)
     startTransition(() => setPath(to))
   }, [])
+  const section = path.split(/[/?]/)[1]
+  useEffect(() => {
+    window.scrollTo({ top: 0 })
+  }, [section])
   return <RouterContext value={{ path, route: parseRoute(path), pending, navigate }}>{children}</RouterContext>
 }
 

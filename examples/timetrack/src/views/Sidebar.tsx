@@ -14,16 +14,52 @@ export function useSignIn() {
   }
 }
 
+export const navLinks = () => [
+  { name: "week", label: "Week", icon: "▦", to: `/week/${startOfWeek(today())}` },
+  { name: "month", label: "Month", icon: "▤", to: `/month/${monthOf(today())}` },
+  { name: "projects", label: "Projects", icon: "◫", to: "/projects" },
+  { name: "reports", label: "Reports", icon: "▥", to: "/reports" },
+]
+
+export function TabBar() {
+  const { route } = useRouter()
+  return (
+    <nav className="tabbar">
+      {navLinks().map((link) => (
+        <Link key={link.name} to={link.to} className={route.name === link.name ? "active" : ""}>
+          <span aria-hidden>{link.icon}</span>
+          {link.label}
+        </Link>
+      ))}
+    </nav>
+  )
+}
+
+export function MobileHeader({ onMenu }: { onMenu: () => void }) {
+  const running = useQuery(team.workingNow)
+  return (
+    <header className="mobile-header">
+      <button className="ghost" aria-label="Open menu" onClick={onMenu}>
+        ☰
+      </button>
+      <div className="brand">
+        <span className="logo">◷</span> Lyn Time
+      </div>
+      <button className="ghost working-badge" onClick={onMenu} aria-label={`${running.length} people tracking time`}>
+        {running.slice(0, 3).map((entry) => (
+          <Avatar key={entry.id} name={entry.userName} color={entry.userColor} size={22} />
+        ))}
+        {running.length ? <span className="live-dot" /> : null}
+      </button>
+    </header>
+  )
+}
+
 export function Sidebar({ me }: { me: { id: string; name: string; role: string; color: string } }) {
   const { route } = useRouter()
   const members = useQuery(team.members)
   const signIn = useSignIn()
-  const links = [
-    { name: "week", label: "Week", to: `/week/${startOfWeek(today())}` },
-    { name: "month", label: "Month", to: `/month/${monthOf(today())}` },
-    { name: "projects", label: "Projects", to: "/projects" },
-    { name: "reports", label: "Reports", to: "/reports" },
-  ]
+  const links = navLinks()
   return (
     <aside className="sidebar">
       <div className="brand">

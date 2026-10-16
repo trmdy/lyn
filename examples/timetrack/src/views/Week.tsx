@@ -84,6 +84,9 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
   const latestDrag = useRef(drag)
   latestDrag.current = drag
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [focusDay, setFocusDay] = useState(route.day)
+  const focus = days.includes(focusDay) ? focusDay : days.includes(today()) ? today() : start
+  const tap = useRef<{ x: number; y: number; action: () => void } | null>(null)
   const grid = useRef<HTMLDivElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -101,14 +104,22 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
   })
 
   useLayoutEffect(() => {
-    if (scroller.current) scroller.current.scrollTop = (8 - HOUR_START) * HOUR_PX
+    const element = scroller.current
+    if (!element) return
+    const offset = (8 - HOUR_START) * HOUR_PX
+    if (element.scrollHeight > element.clientHeight) element.scrollTop = offset
+    else {
+      const sticky = [...document.querySelectorAll(".mobile-header, .timer, .week-head")].reduce((sum, bar) => sum + bar.getBoundingClientRect().height, 0)
+      window.scrollTo({ top: element.getBoundingClientRect().top + window.scrollY + offset - sticky - 8 })
+    }
   }, [])
 
   const minuteAt = (clientY: number) => {
     const box = grid.current!.getBoundingClientRect()
     return clampMinutes(snap(HOUR_START * 60 + (clientY - box.top) / MINUTE_PX))
   }
-  const columnWidth = () => grid.current!.getBoundingClientRect().width / 7
+  const visibleColumns = () => [...grid.current!.children].filter((element) => (element as HTMLElement).offsetWidth > 0).length
+  const columnWidth = () => grid.current!.getBoundingClientRect().width / Math.max(1, visibleColumns())
 
   useEffect(() => {
     if (!drag) return
@@ -118,7 +129,7 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
         if (current.kind === "create") return { ...current, to: Math.max(current.from + SNAP, minuteAt(event.clientY)) }
         if (current.kind === "move") {
           const dy = snap((event.clientY - current.y) / MINUTE_PX)
-          const dx = Math.round((event.clientX - current.x) / columnWidth())
+          const dx = visibleColumns() > 1 ? Math.round((event.clientX - current.x) / columnWidth()) : 0
           return { ...current, dy, dx, moved: current.moved || Math.abs(event.clientY - current.y) > 3 || dx !== 0 }
         }
         return { ...current, dy: snap((event.clientY - current.y) / MINUTE_PX) }
@@ -213,10 +224,18 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
       <div className="week-head">
         <div />
         {days.map((day, index) => (
-          <div key={day} className={day === today() ? "today" : ""}>
-            <span>{formatDay(day)}</span>
+          <button
+            key={day}
+            type="button"
+            className={`${day === today() ? "today" : ""} ${day === focus ? "focus" : ""}`}
+            onClick={() => setFocusDay(day)}
+          >
+            <span>
+              {formatDay(day).replace(/ \S+$/, "")}
+              <em> {formatDay(day).split(" ").at(-1)}</em>
+            </span>
             <strong>{formatHours(totals[index]!)}</strong>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -229,7 +248,17 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
               </div>
             ))}
           </div>
-          <div className="columns" ref={grid} style={{ height: (HOUR_END - HOUR_START) * HOUR_PX }}>
+          <div
+            className="columns"
+            ref={grid}
+            style={{ height: (HOUR_END - HOUR_START) * HOUR_PX }}
+            onPointerUp={(event) => {
+              const pending = tap.current
+              tap.current = null
+              if (pending && Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 10) pending.action()
+            }}
+            onPointerCancel={() => (tap.current = null)}
+          >
             {days.map((day, index) => {
               const segments = lanes(
                 visible
@@ -244,10 +273,18 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
               return (
                 <div
                   key={day}
-                  className={`column ${day === today() ? "today" : ""} ${editable ? "editable" : ""}`}
+                  className={`column ${day === today() ? "today" : ""} ${day === focus ? "focus" : ""} ${editable ? "editable" : ""}`}
                   onPointerDown={(event: ReactPointerEvent) => {
                     if (!editable || event.target !== event.currentTarget) return
                     const from = minuteAt(event.clientY)
+                    if (event.pointerType === "touch") {
+                      tap.current = {
+                        x: event.clientX,
+                        y: event.clientY,
+                        action: () => setDraft({ day, from, to: from + 60, projectId: projects[0]?.id ?? "", taskId: null, description: "" }),
+                      }
+                      return
+                    }
                     setDrag({ kind: "create", day: index, from, to: from + SNAP })
                   }}
                 >
@@ -265,6 +302,10 @@ export function WeekView({ route, me }: { route: Extract<Route, { name: "week" }
                       onPointerDown={(event) => {
                         event.stopPropagation()
                         if (!editable) return
+                        if (event.pointerType === "touch") {
+                          tap.current = { x: event.clientX, y: event.clientY, action: () => setDraft(draftOf(entry)) }
+                          return
+                        }
                         if (!entry.endedAt) return setDraft(draftOf(entry))
                         setDrag({ kind: "move", entry, x: event.clientX, y: event.clientY, dx: 0, dy: 0, moved: false })
                       }}

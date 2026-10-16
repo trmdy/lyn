@@ -1,11 +1,11 @@
 import { useQuery } from "@lyn/react"
-import { Suspense } from "react"
+import { Suspense, useEffect, useState } from "react"
 import * as team from "./team.lyn"
 import { Router, useRouter } from "./lib/router"
 import { MonthView } from "./views/Month"
 import { ProjectsView } from "./views/Projects"
 import { ReportsView } from "./views/Reports"
-import { SignIn, Sidebar } from "./views/Sidebar"
+import { MobileHeader, SignIn, Sidebar, TabBar } from "./views/Sidebar"
 import { TimerBar } from "./views/TimerBar"
 import { WeekView } from "./views/Week"
 
@@ -19,11 +19,18 @@ export default function App({ url }: { url: string }) {
 
 function Shell() {
   const me = useQuery(team.me)
-  const { route, pending } = useRouter()
+  const { path, route, pending } = useRouter()
+  const [drawer, setDrawer] = useState(false)
+  useEffect(() => {
+    setDrawer(false)
+  }, [path])
   if (!me) return <SignIn />
   return (
-    <div className="shell">
+    <div className={`shell ${drawer ? "drawer-open" : ""}`}>
+      <MobileHeader onMenu={() => setDrawer(true)} />
       <Sidebar me={me} />
+      <div className="scrim" onClick={() => setDrawer(false)} />
+      <TabBar />
       <main className={pending ? "pending" : ""}>
         <TimerBar />
         <Suspense fallback={<div className="loading">Loading…</div>}>

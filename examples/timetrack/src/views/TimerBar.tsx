@@ -1,5 +1,5 @@
 import { useMutation, useQuery, uuid } from "@lyn/react"
-import { useState, type FormEvent } from "react"
+import { useLayoutEffect, useRef, useState, type FormEvent } from "react"
 import * as entries from "../entries.lyn"
 import { useNow } from "../lib/hooks"
 import { formatDuration } from "../lib/time"
@@ -13,6 +13,16 @@ export function TimerBar() {
   const [description, setDescription] = useState("")
   const now = useNow()
   const project = projects.find((candidate) => candidate.id === projectId)
+  const bar = useRef<HTMLFormElement>(null)
+  useLayoutEffect(() => {
+    const form = bar.current
+    if (!form) return
+    const observer = new ResizeObserver(() => {
+      document.documentElement.style.setProperty("--timer-height", `${form.getBoundingClientRect().height}px`)
+    })
+    observer.observe(form)
+    return () => observer.disconnect()
+  }, [])
 
   const start = useMutation(entries.startTimer, {
     optimistic: (store, entry) => {
@@ -41,7 +51,7 @@ export function TimerBar() {
   }
 
   return (
-    <form className={`timer ${running ? "running" : ""}`} onSubmit={submit}>
+    <form ref={bar} className={`timer ${running ? "running" : ""}`} onSubmit={submit}>
       {running ? (
         <div className="timer-current">
           <Dot color={running.projectColor} />
