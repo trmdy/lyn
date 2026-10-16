@@ -5,7 +5,7 @@ import { once } from 'node:events'
 import pg from 'pg'
 import { loadModule, parseSync } from 'libpg-query'
 import { Engine, __register, query, mutation } from '@lyn/core'
-import { decode, type ServerFrame } from '@lyn/core/wire'
+import { createRouter } from '@lyn/core/wire'
 import { postgres } from '../src/index.ts'
 import { analyze, buildCatalog, clearTemplates, readsOf } from '../src/reads.ts'
 
@@ -112,9 +112,10 @@ let initial = 0, errors = 0, deliveries = 0, collect = false
 const observations: { seq: number; at: number; sub: number }[] = []
 const arrivals = new Map<number, number>()
 const settled = new Set<string>()
+const router = createRouter()
 const connection = engine.connect(frame => {
   const at = now()
-  for (const m of decode<ServerFrame>(frame).messages) {
+  for (const m of router.route(frame)) {
     if (m.type === 'settled') for (const id of m.mutations) settled.add(id)
     if (m.type === 'error') { errors++; console.error(JSON.stringify(m)); continue }
     if (m.type === 'data') {
@@ -176,7 +177,9 @@ if (f.mode === 'fanout') {
   }
   const timer = setInterval(() => void sample(), 1000)
   const args = Object.entries(f).filter(([k]) => k !== 'mode').flatMap(([k, v]) => [`--${k}`, String(v)])
-  const child = spawn('taskset', ['-c', f.cpus!, process.execPath, import.meta.filename, '--mode', 'writer', ...args], { stdio: ['ignore', 'inherit', 'inherit'] })
+  const command = [process.execPath, import.meta.filename, '--mode', 'writer', ...args]
+  const pinned = process.platform === 'linux' ? ['taskset', '-c', f.cpus!, ...command] : command
+  const child = spawn(pinned[0]!, pinned.slice(1), { stdio: ['ignore', 'inherit', 'inherit'] })
   const [exit] = await once(child, 'exit')
   if (exit !== 0) throw new Error(`writer exit ${exit}`)
   const writerEnd = performance.now()

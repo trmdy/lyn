@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { __register, Engine, query, mutation } from '@lyn/core'
-import { decode, type ServerFrame } from '@lyn/core/wire'
+import { createRouter } from '@lyn/core/wire'
 import pg from 'pg'
 import { loadModule } from 'libpg-query'
 import { PostgresAdapter } from '../src/index.ts'
@@ -97,9 +97,10 @@ const seen=new Map<number,number>()
 const latest=new Map<number,{seq:number,value:string}>()
 const deliveries: {sub:number,seq:number,time:number,snapshot?:string}[]=[]
 let recording=false, errors=0
+const router=createRouter()
 const connection=engine.connect(frame=>{
   const time=Date.now()
-  for(const m of decode<ServerFrame>(frame).messages) {
+  for(const m of router.route(frame)) {
     if(m.type==='error') {errors++;console.error(m);continue}
     if(m.type==='data') { const seq=(m.value as {seq:number}).seq; seen.set(m.sub,seq); latest.set(m.sub,m.value as {seq:number,value:string}); if(recording) deliveries.push({sub:m.sub,seq,time,snapshot:(m.value as {snapshot?:string}).snapshot}) }
   }

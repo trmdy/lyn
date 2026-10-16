@@ -25,6 +25,20 @@ export function setTemplate(next: Template) {
 const reply = (c: Context, status: number, body: unknown) =>
   c.body(encode(body), status as 200, { "content-type": "application/x-devalue" })
 
+const encoder = new TextEncoder()
+const recentFrames = new Map<string, Uint8Array>()
+
+const frameBytes = (frame: string, shared: boolean) => {
+  if (!shared) return encoder.encode(`event: frame\ndata: ${frame}\n\n`)
+  let bytes = recentFrames.get(frame)
+  if (!bytes) {
+    bytes = encoder.encode(`event: frame\ndata: ${frame}\n\n`)
+    recentFrames.set(frame, bytes)
+    if (recentFrames.size > 64) recentFrames.delete(recentFrames.keys().next().value!)
+  }
+  return bytes
+}
+
 export function lyn(options: LynOptions) {
   const engine = Engine.for(options.adapter)
   const sessionOf = async (c: Context) => (options.auth ? ((await options.auth(c)) ?? null) : null)
@@ -49,11 +63,11 @@ export function lyn(options: LynOptions) {
         engine.disconnect(connection.id)
         stream.abort()
       }
-      const connection = engine.connect((frame) => {
+      const connection = engine.connect((frame, shared) => {
         if (!open) return
         if (pending >= maxPending) return close()
         pending++
-        stream.writeSSE({ event: "frame", data: frame }).then(() => pending--, close)
+        stream.write(frameBytes(frame, shared)).then(() => pending--, close)
       }, session)
       stream.onAbort(close)
       await stream.writeSSE({ event: "hello", data: JSON.stringify({ clientId: connection.id }), retry: 1000 })

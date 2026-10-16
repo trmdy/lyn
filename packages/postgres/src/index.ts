@@ -3,7 +3,7 @@ import type { Adapter, Change, ChangeBatch, ExecutionContext, Reader } from "@ly
 import { loadModule } from "libpg-query"
 import pg from "pg"
 import { LogicalReplicationService, PgoutputPlugin } from "pg-logical-replication"
-import { buildCatalog, changeAffects, clearTemplates, readsOf, type Catalog, type ReadSet } from "./reads.ts"
+import { buildCatalog, changeAffects, clearTemplates, readsOf, ReadsIndex, type Catalog, type ReadSet } from "./reads.ts"
 
 export type { ReadSet, TableRead } from "./reads.ts"
 
@@ -180,6 +180,10 @@ export class PostgresAdapter implements Adapter {
 
   isLeader() {
     return this.#leaderClient !== undefined
+  }
+
+  createIndex<K>() {
+    return new ReadsIndex<K>()
   }
 
   affects(reads: unknown, batch: ChangeBatch) {

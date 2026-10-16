@@ -1,4 +1,4 @@
-import { applyRows, decode, encode, queryKey, type ServerFrame } from "@lyn/core/wire"
+import { applyRows, createRouter, decode, encode, queryKey } from "@lyn/core/wire"
 import type { QueryRef } from "@lyn/core"
 
 export type ArgsParam<A> = Record<string, never> extends A ? [args?: A] : [args: A]
@@ -57,6 +57,7 @@ export class LynClient {
   readonly renderTime: number
   readonly #entries = new Map<string, Entry>()
   readonly #bySub = new Map<number, Entry>()
+  readonly #router = createRouter()
   readonly #fetchQuery?: LynClientOptions["fetchQuery"]
   readonly #baseUrl: string
   readonly #gcTime: number
@@ -187,6 +188,7 @@ export class LynClient {
       this.#outgoing.add.delete(entry)
       if (entry.sub !== undefined) {
         this.#bySub.delete(entry.sub)
+        this.#router.forget(entry.sub)
         this.#outgoing.remove.add(entry.sub)
         this.#flushOutgoingSoon()
       }
@@ -194,7 +196,10 @@ export class LynClient {
   }
 
   #queueSubscribe(entry: Entry) {
-    if (entry.sub !== undefined) this.#bySub.delete(entry.sub)
+    if (entry.sub !== undefined) {
+      this.#bySub.delete(entry.sub)
+      this.#router.forget(entry.sub)
+    }
     entry.sub = this.#nextSub++
     this.#bySub.set(entry.sub, entry)
     this.#outgoing.add.add(entry)
@@ -243,7 +248,7 @@ export class LynClient {
       this.#reconnectTimer = setTimeout(() => this.reconnect(), this.#reconnectDelay)
     })
     source.addEventListener("hello", (event) => this.#onHello(JSON.parse((event as MessageEvent).data).clientId))
-    source.addEventListener("frame", (event) => this.#onFrame(decode<ServerFrame>((event as MessageEvent).data)))
+    source.addEventListener("frame", (event) => this.#onFrame((event as MessageEvent).data))
   }
 
   #onHello(clientId: string) {
@@ -251,6 +256,7 @@ export class LynClient {
     const reconnect = this.#clientId !== undefined
     this.#clientId = clientId
     this.#bySub.clear()
+    this.#router.reset()
     this.#outgoing = { add: new Set(), remove: new Set() }
     if (reconnect)
       this.#resync = {
@@ -260,9 +266,9 @@ export class LynClient {
     for (const entry of this.#entries.values()) this.#queueSubscribe(entry)
   }
 
-  #onFrame(frame: ServerFrame) {
+  #onFrame(frame: string) {
     const touched = new Set<Entry>()
-    for (const message of frame.messages) {
+    for (const message of this.#router.route(frame)) {
       if (message.type === "settled") {
         for (const id of message.mutations) this.#drop(id, false)
         continue

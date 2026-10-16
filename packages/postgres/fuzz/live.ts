@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util"
 import { __register, Engine, mutation, query, type Reader, type Session } from "@lyn/core"
-import { applyRows, decode, encode, fingerprint, type ServerFrame } from "@lyn/core/wire"
+import { applyRows, createRouter, encode, fingerprint } from "@lyn/core/wire"
 import pg from "pg"
 import { postgres } from "../src/index.ts"
 
@@ -303,9 +303,10 @@ async function main() {
 
   const clients: FakeClient[] = SESSIONS.map((session) => {
     const client: FakeClient = { session, connection: { id: "" }, subs: new Map(), settled: new Map(), nextSub: 1 }
+    const router = createRouter()
     client.connection = engine.connect((frame) => {
       const settledNow: string[] = []
-      for (const message of decode<ServerFrame>(frame).messages) {
+      for (const message of router.route(frame)) {
         if (message.type === "settled") {
           settledNow.push(...message.mutations)
           continue

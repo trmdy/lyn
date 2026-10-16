@@ -29,9 +29,10 @@ Each query queues a devalue payload before waking React. The renderer emits queu
 | `snapshot(after, run)` | Give `run` a reader that executes handlers against one consistent state that includes every batch in `after`. The reader must be safe to call concurrently. |
 | `write(context, run)` | Run a mutation in a transaction; return a write token that will appear in the batch containing its commit. |
 | `affects(reads, batch)` | Decide whether a batch can change the result of a query that recorded `reads`. Must never return a false negative. |
+| `createIndex()` (optional) | Return a `ReadIndex` that finds the affected `reads` for a batch without scanning every query. Same no-false-negatives rule as `affects`. Without it, core falls back to calling `affects` on every query. |
 | `isLeader()` | Whether this instance should run effects (elected across instances). |
 
-`reads` is opaque to core. A SQL adapter records tables and equality predicates; a document adapter could record collections and filters. Core only stores it and asks `affects`.
+`reads` is opaque to core. A SQL adapter records tables and equality predicates; a document adapter could record collections and filters. Core only stores it, keeps the adapter's index up to date, and asks `affects`. The Postgres index buckets reads by table and by the value of their first equality column, then confirms each candidate with `affects` logic.
 
 A `context` carries the session (or marks a system call for effects). Adapters apply it however their database supports, for example Postgres sets `lyn.session` and a role so row-level security applies.
 
@@ -48,8 +49,8 @@ A `context` carries the session (or marks a system call for effects). Adapters a
 
 Each live query (a "group": one query, arguments and session) runs independently, so a slow query never delays others.
 
-- **Invalidation.** When a change batch arrives, every idle group whose read set it affects is queued. A group that is already running queues every batch, because its read set may change; when the run finishes, the queued batches are checked against the new read set and the group re-runs once if any match.
-- **Waves.** Groups queued in the same tick run together in one snapshot (concurrently, through the adapter's reader) and each delivers its result as soon as it finishes. Updates are coalesced per connection into one SSE frame per tick.
+- **Invalidation.** When a change batch arrives, the adapter's index finds every idle group whose read set it affects, and those groups are queued. A group that is already running queues every batch, because its read set may change; when the run finishes, the queued batches are checked against the new read set and the group re-runs once if any match. A queue longer than 64 batches collapses into one forced re-run that keeps the write tokens, so a slow query under heavy write load holds bounded memory.
+- **Waves.** Groups queued in the same tick run together in one snapshot (concurrently, through the adapter's reader) and each delivers its result as soon as it finishes. Updates are coalesced per connection into one SSE frame per tick. Messages are addressed by group id: an update is encoded once and the same bytes go to every subscriber. The first message a subscription receives carries its `sub` id, which binds it to the group on the client.
 - **Settling.** A mutation settles once every query its connection subscribes to that the commit affected has a result that includes it. Until then, that connection's updates for those queries are held back, then released together with `settled` in one frame, so optimistic updates never double up or flicker. Other connections and other queries are not held.
 - **Failure.** A failed snapshot re-queues its groups with backoff; a failed query matches every change until it recovers.
 

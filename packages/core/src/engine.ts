@@ -1,4 +1,4 @@
-import type { Adapter, ChangeBatch, Reader } from "./adapter.ts"
+import type { Adapter, ChangeBatch, Reader, ReadIndex } from "./adapter.ts"
 import {
   createInvalidate,
   LynError,
@@ -15,24 +15,37 @@ import {
   diffRows,
   fingerprint,
   encode,
+  frameOf,
   queryKey,
   stableStringify,
   type MutationRequest,
   type RowsPatch,
-  type ServerFrame,
   type ServerMessage,
   type SubscribeRequest,
 } from "./wire.ts"
+
+interface Outgoing {
+  text: string
+  frame?: string
+}
 
 interface Connection {
   id: string
   session: Session | null
   sessionKey: string
-  send: (frame: string) => void
+  send: (frame: string, shared: boolean) => void
   subs: Map<number, Group>
-  outbox: ServerMessage[]
+  outbox: Outgoing[]
   flushing: boolean
-  held: { message: ServerMessage; groups: Set<Group> }[]
+  held: { message: Outgoing; group?: Group; settles?: PendingMutation }[]
+  pending: Set<PendingMutation>
+}
+
+interface Subscriber {
+  connection: Connection
+  sub: number
+  fingerprint?: string
+  bound: boolean
 }
 
 type Update =
@@ -47,6 +60,7 @@ type Evaluation =
 type Work = { batch?: ChangeBatch; force?: boolean }
 
 interface Group {
+  id: number
   key: string
   queryKey: string
   session: Session | null
@@ -63,10 +77,12 @@ interface Group {
   running: boolean
   active: boolean
   queued: Work[]
-  subscribers: Map<string, { connection: Connection; sub: number; fingerprint?: string }>
+  awaitingFingerprint: number
+  subscribers: Map<string, Subscriber>
 }
 
 interface PendingMutation {
+  token: string
   connectionId?: string
   mutationId: string
   at: number
@@ -78,6 +94,31 @@ const soon: (task: () => void) => void =
   typeof (globalThis as { setImmediate?: unknown }).setImmediate === "function"
     ? (task) => (globalThis as unknown as { setImmediate: (task: () => void) => void }).setImmediate(task)
     : (task) => setTimeout(task, 0)
+
+const MAX_QUEUED = 64
+
+const outgoing = (message: ServerMessage): Outgoing => ({ text: encode(message) })
+
+class LinearIndex<K> implements ReadIndex<K> {
+  readonly #adapter: Adapter
+  readonly #reads = new Map<K, unknown>()
+
+  constructor(adapter: Adapter) {
+    this.#adapter = adapter
+  }
+
+  set(key: K, reads: unknown) {
+    this.#reads.set(key, reads)
+  }
+
+  delete(key: K) {
+    this.#reads.delete(key)
+  }
+
+  match(batch: ChangeBatch, visit: (key: K) => void) {
+    for (const [key, reads] of this.#reads) if (this.#adapter.affects(reads, batch)) visit(key)
+  }
+}
 
 const sessionKey = (session: Session | null) => (session ? stableStringify(session) : "anonymous")
 
@@ -109,19 +150,24 @@ export class Engine {
   readonly #groups = new Map<string, Group>()
   readonly #connections = new Map<string, Connection>()
   readonly #pending = new Map<string, PendingMutation>()
+  readonly #index: ReadIndex<Group>
+  readonly #waiting = new Set<Group>()
+  readonly #running = new Set<Group>()
+  #nextGroupId = 1
+  #lastExpiry = 0
   #waveScheduled = false
   #retryDelay = 0
   #effects: Promise<unknown> = Promise.resolve()
 
   constructor(adapter: Adapter) {
     this.adapter = adapter
+    this.#index = adapter.createIndex?.<Group>() ?? new LinearIndex<Group>(adapter)
     this.ready = adapter.start((batch) => this.#receive(batch))
     setGlobalInvalidate((invalidation) => this.invalidate(invalidation))
   }
 
   get busy() {
-    if (this.#waveScheduled) return true
-    for (const group of this.#groups.values()) if (group.running || group.queued.length) return true
+    if (this.#waveScheduled || this.#running.size || this.#waiting.size) return true
     for (const connection of this.#connections.values()) if (connection.outbox.length || connection.held.length) return true
     return false
   }
@@ -131,16 +177,36 @@ export class Engine {
     ;(globalThis as GlobalWithEngines).__lynEngines?.delete(this.adapter.id)
   }
 
+  #queue(group: Group, work: Work) {
+    if (group.queued.length >= MAX_QUEUED) {
+      const tokens = new Set(group.queued.flatMap((item) => item.batch?.tokens ?? []))
+      for (const token of work.batch?.tokens ?? []) tokens.add(token)
+      group.queued = [{ force: true, batch: { tokens: [...tokens], changes: [] } }]
+    } else group.queued.push(work)
+    if (!group.running) this.#waiting.add(group)
+  }
+
   #receive(incoming: ChangeBatch) {
     const batch = incoming.resync ? { ...incoming, tokens: [...this.#pending.keys()] } : incoming
+    const work: Work = { batch, force: batch.resync }
     const queued = new Set<Group>()
-    for (const group of this.#groups.values()) {
-      if (!group.running && !batch.resync && !this.adapter.affects(group.reads, batch)) continue
-      group.queued.push({ batch, force: batch.resync })
+    const add = (group: Group) => {
+      if (queued.has(group)) return
       queued.add(group)
+      this.#queue(group, work)
+    }
+    if (batch.resync) for (const group of this.#groups.values()) add(group)
+    else {
+      this.#index.match(batch, (group) => {
+        if (!group.running) add(group)
+      })
+      for (const group of this.#running) add(group)
     }
     const now = Date.now()
-    for (const [token, pending] of this.#pending) if (now - pending.at > 60_000) this.#settle(token, pending)
+    if (now - this.#lastExpiry > 1_000) {
+      this.#lastExpiry = now
+      for (const [token, pending] of this.#pending) if (now - pending.at > 60_000) this.#settle(token, pending)
+    }
     for (const token of batch.tokens) {
       const pending = this.#pending.get(token)
       if (!pending || pending.groups) continue
@@ -148,6 +214,7 @@ export class Engine {
       pending.affected = new Set(connection ? [...connection.subs.values()].filter((group) => queued.has(group)) : [])
       pending.groups = new Set(pending.affected)
       if (!pending.groups.size) this.#settle(token, pending)
+      else connection?.pending.add(pending)
     }
     this.#runEffects([batch])
     this.#scheduleWave()
@@ -159,7 +226,7 @@ export class Engine {
         invalidation.kind === "all" ||
         (invalidation.kind === "query" && invalidation.key === group.queryKey) ||
         (invalidation.kind === "tag" && group.tags.includes(invalidation.tag))
-      if (matches) group.queued.push({ force: true })
+      if (matches) this.#queue(group, { force: true })
     }
     this.#scheduleWave()
   }
@@ -177,10 +244,12 @@ export class Engine {
 
   #startWave() {
     const work = new Map<Group, Work[]>()
-    for (const group of this.#groups.values()) {
-      if (group.running || !group.queued.length) continue
+    for (const group of this.#waiting) {
+      this.#waiting.delete(group)
+      if (group.running || !group.queued.length || !group.active) continue
       work.set(group, group.queued.splice(0))
       group.running = true
+      this.#running.add(group)
     }
     if (!work.size) return
     const after = [...new Set([...work.values()].flat().flatMap((item) => (item.batch ? [item.batch] : [])))]
@@ -197,7 +266,9 @@ export class Engine {
       for (const [group, covered] of work) {
         if (!group.running) continue
         group.running = false
+        this.#running.delete(group)
         group.queued.unshift(...covered)
+        if (group.active) this.#waiting.add(group)
       }
       this.#retryDelay = Math.min(5_000, this.#retryDelay * 2 || 100)
       console.error(`[lyn] re-running queries failed, retrying in ${this.#retryDelay}ms:`, error)
@@ -207,21 +278,41 @@ export class Engine {
 
   #finish(group: Group, covered: Work[], evaluation: Evaluation) {
     group.running = false
+    this.#running.delete(group)
     if (!group.active) return
     const update = this.#apply(group, evaluation)
-    if (update) for (const subscriber of group.subscribers.values()) {
-      const { connection, sub } = subscriber
-      const message: ServerMessage = update.type !== "error" && subscriber.fingerprint !== undefined && subscriber.fingerprint === group.fingerprint?.value
-        ? { type: "unchanged", sub, version: group.version }
-        : { ...update, sub }
-      subscriber.fingerprint = undefined
-      this.#deliver(connection, message, group)
+    if (update) {
+      const shared = outgoing({ ...update, group: group.id } as ServerMessage)
+      const sharedSent = new Set<Connection>()
+      for (const subscriber of group.subscribers.values()) {
+        const { connection, sub } = subscriber
+        let message = shared
+        if (update.type !== "error" && subscriber.fingerprint !== undefined && subscriber.fingerprint === group.fingerprint?.value)
+          message = outgoing({ type: "unchanged", group: group.id, sub, version: group.version })
+        else if (!subscriber.bound)
+          message = outgoing(
+            update.type === "error"
+              ? { type: "error", group: group.id, sub, message: update.message }
+              : { type: "data", group: group.id, sub, version: group.version, value: group.value },
+          )
+        if (subscriber.fingerprint !== undefined) group.awaitingFingerprint--
+        subscriber.fingerprint = undefined
+        subscriber.bound = true
+        if (message === shared) {
+          if (sharedSent.has(connection)) continue
+          sharedSent.add(connection)
+        }
+        this.#deliver(connection, message, group)
+      }
     }
     const rerun = group.queued.filter((item) => item.force || !item.batch || this.adapter.affects(group.reads, item.batch))
     const skipped = group.queued.filter((item) => !rerun.includes(item))
     group.queued = rerun
     for (const item of [...covered, ...skipped]) if (item.batch) this.#satisfied(group, item.batch)
-    if (rerun.length) this.#scheduleWave()
+    if (rerun.length) {
+      this.#waiting.add(group)
+      this.#scheduleWave()
+    }
   }
 
   #satisfied(group: Group, batch: ChangeBatch) {
@@ -235,41 +326,42 @@ export class Engine {
     this.#pending.delete(token)
     const connection = pending.connectionId ? this.#connections.get(pending.connectionId) : undefined
     if (!connection) return
-    connection.held.push({ message: { type: "settled", mutations: [pending.mutationId] }, groups: pending.affected ?? new Set() })
+    connection.pending.delete(pending)
+    connection.held.push({ message: outgoing({ type: "settled", mutations: [pending.mutationId] }), settles: pending })
     this.#release(connection)
   }
 
-  #blocked(connection: Connection, groups: Set<Group>) {
-    for (const pending of this.#pending.values()) {
-      if (pending.connectionId !== connection.id || !pending.affected) continue
-      for (const group of groups) if (pending.affected.has(group)) return true
-    }
+  #blocked(connection: Connection, groups: Iterable<Group>) {
+    if (!connection.pending.size) return false
+    for (const pending of connection.pending) for (const group of groups) if (pending.affected?.has(group)) return true
     return false
   }
 
-  #deliver(connection: Connection, message: ServerMessage, group: Group) {
-    const groups = new Set([group])
-    if (this.#blocked(connection, groups)) connection.held.push({ message, groups })
+  #deliver(connection: Connection, message: Outgoing, group: Group) {
+    if (connection.pending.size && this.#blocked(connection, [group])) connection.held.push({ message, group })
     else this.#enqueue(connection, message)
   }
 
   #release(connection: Connection) {
     const still: typeof connection.held = []
     for (const item of connection.held) {
-      if (this.#blocked(connection, item.groups)) still.push(item)
+      const groups = item.group ? [item.group] : (item.settles?.affected ?? [])
+      if (this.#blocked(connection, groups)) still.push(item)
       else this.#enqueue(connection, item.message)
     }
     connection.held = still
   }
 
-  #enqueue(connection: Connection, message: ServerMessage) {
+  #enqueue(connection: Connection, message: Outgoing) {
     connection.outbox.push(message)
     if (connection.flushing) return
     connection.flushing = true
     soon(() => {
       connection.flushing = false
       const messages = connection.outbox.splice(0)
-      if (messages.length && this.#connections.get(connection.id) === connection) connection.send(encode({ messages } satisfies ServerFrame))
+      if (!messages.length || this.#connections.get(connection.id) !== connection) return
+      if (messages.length === 1) connection.send((messages[0]!.frame ??= frameOf([messages[0]!.text])), true)
+      else connection.send(frameOf(messages.map((item) => item.text)), false)
     })
   }
 
@@ -293,14 +385,21 @@ export class Engine {
       const result = await this.#execute(group.name, group.args, group.session, read, tags)
       if (!result.ok) return { ok: false, error: publicMessage(result.error), reads: undefined, tags }
       const encoded = encode(result.value)
-      const wanted = [...group.subscribers.values()].some((subscriber) => subscriber.fingerprint !== undefined)
-      return { ok: true, value: result.value, encoded, fingerprint: wanted ? await fingerprint(encoded) : undefined, reads: result.reads, tags }
+      return {
+        ok: true,
+        value: result.value,
+        encoded,
+        fingerprint: group.awaitingFingerprint > 0 ? await fingerprint(encoded) : undefined,
+        reads: result.reads,
+        tags,
+      }
     } catch (error) {
       return { ok: false, error: publicMessage(error), reads: undefined, tags }
     }
   }
 
   #apply(group: Group, evaluation: Evaluation): Update | null {
+    if (group.reads !== evaluation.reads) this.#index.set(group, evaluation.reads)
     group.reads = evaluation.reads
     group.tags = evaluation.tags
     group.evaluated = true
@@ -376,7 +475,7 @@ export class Engine {
     return group.encoded === encoded ? value : undefined
   }
 
-  connect(send: (frame: string) => void, session: Session | null): Connection {
+  connect(send: (frame: string, shared: boolean) => void, session: Session | null): Connection {
     const connection: Connection = {
       id: crypto.randomUUID(),
       session,
@@ -386,6 +485,7 @@ export class Engine {
       outbox: [],
       flushing: false,
       held: [],
+      pending: new Set(),
     }
     this.#connections.set(connection.id, connection)
     return connection
@@ -402,13 +502,17 @@ export class Engine {
     const group = connection.subs.get(sub)
     if (!group) return
     connection.subs.delete(sub)
-    group.subscribers.delete(`${connection.id}:${sub}`)
-    if ([...group.subscribers.values()].some((subscriber) => subscriber.connection === connection)) return
-    for (const [token, pending] of this.#pending)
-      if (pending.connectionId === connection.id && pending.groups?.delete(group) && !pending.groups.size) this.#settle(token, pending)
+    const key = `${connection.id}:${sub}`
+    if (group.subscribers.get(key)?.fingerprint !== undefined) group.awaitingFingerprint--
+    group.subscribers.delete(key)
+    for (const other of connection.subs.values()) if (other === group) return
+    for (const pending of [...connection.pending])
+      if (pending.groups?.delete(group) && !pending.groups.size) this.#settle(pending.token, pending)
     if (group.subscribers.size) return
     group.active = false
     this.#groups.delete(group.key)
+    this.#index.delete(group)
+    this.#waiting.delete(group)
   }
 
   async subscribe(request: SubscribeRequest, session: Session | null) {
@@ -423,6 +527,7 @@ export class Engine {
       let group = this.#groups.get(key)
       if (!group) {
         group = {
+          id: this.#nextGroupId++,
           key,
           queryKey: queryKey(name, args),
           session: connection.session,
@@ -436,22 +541,30 @@ export class Engine {
           running: false,
           active: true,
           queued: [{ force: true }],
+          awaitingFingerprint: 0,
           subscribers: new Map(),
         }
         this.#groups.set(key, group)
+        this.#index.set(group, undefined)
+        this.#waiting.add(group)
       }
-      group.subscribers.set(`${connection.id}:${sub}`, { connection, sub, fingerprint: group.evaluated ? undefined : fingerprint })
+      const subscriber: Subscriber = { connection, sub, fingerprint: group.evaluated ? undefined : fingerprint, bound: false }
+      if (subscriber.fingerprint !== undefined) group.awaitingFingerprint++
+      group.subscribers.set(`${connection.id}:${sub}`, subscriber)
       connection.subs.set(sub, group)
       if (group.evaluated) {
         const unchanged = !group.error && fingerprint !== undefined && fingerprint === (await this.#fingerprintOf(group))
         if (connection.subs.get(sub) !== group) continue
+        subscriber.bound = true
         this.#deliver(
           connection,
-          group.error
-            ? { type: "error", sub, message: group.error }
-            : unchanged
-              ? { type: "unchanged", sub, version: group.version }
-              : { type: "data", sub, version: group.version, value: group.value },
+          outgoing(
+            group.error
+              ? { type: "error", group: group.id, sub, message: group.error }
+              : unchanged
+                ? { type: "unchanged", group: group.id, sub, version: group.version }
+                : { type: "data", group: group.id, sub, version: group.version, value: group.value },
+          ),
           group,
         )
       }
@@ -472,7 +585,7 @@ export class Engine {
         async () => definition.handler(ctx, args),
         (writeToken) => {
           token = writeToken
-          this.#pending.set(writeToken, { connectionId: request.clientId, mutationId: request.mutationId, at: Date.now() })
+          this.#pending.set(writeToken, { token: writeToken, connectionId: request.clientId, mutationId: request.mutationId, at: Date.now() })
           flushInvalidations()
         },
       )

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { performance } from 'node:perf_hooks'
 const require = createRequire(new URL('../examples/timetrack/package.json', import.meta.url))
 const { Pool } = require('pg')
-const { encode, decode } = await import('../packages/core/src/wire.ts')
+const { encode, decode, createRouter } = await import('../packages/core/src/wire.ts')
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 })
 const agent = new http.Agent({ keepAlive: true, maxSockets: Infinity })
 const base = process.env.BASE_URL ?? 'http://127.0.0.1:4501'
@@ -43,7 +43,7 @@ if(mode==='http') {
   const start=i<target/2?'2026-10-12':['2026-09-21','2026-09-28','2026-10-05','2026-10-12'][i%4]
   const c={i,user,start,cookie:cookies[user],affected:user===0&&start==='2026-10-12',seen:new Set(),ready:false};clients.push(c)
   return new Promise((resolve,reject)=>{
-   const t=performance.now();let buffer='',hello=false,seen=new Set()
+   const t=performance.now(),router=createRouter();let buffer='',hello=false,seen=new Set()
    const r=http.get(new URL('/_lyn/events',base),{agent:false,headers:{cookie:c.cookie}},res=>{
     res.setEncoding('utf8');res.on('data',chunk=>{
      buffer+=chunk;let at
@@ -53,8 +53,8 @@ if(mode==='http') {
        const names=['src/team:me','src/team:members','src/team:workingNow','src/entries:recentAlerts','src/entries:running','src/catalog:pickable','src/entries:week']
        const st=performance.now();req('/_lyn/subscribe',c.cookie,{clientId:c.id,add:names.map((name,sub)=>({sub,name,args:sub===6?{start:c.start}:{}})),remove:[]}).then(r=>{if(r.status!==200||decode(r.text).error){errors++;reject(Error(r.text))}subLat.push(performance.now()-st)}).catch(reject)
       }else {
-       frames++;const arrived=performance.now(),f=decode(data)
-       for(const m of f.messages){
+       frames++;const arrived=performance.now()
+       for(const m of router.route(data)){
         if(m.type==='error'){errors++;if(!c.ready)reject(Error(m.message));continue}
         if(m.type==='settled'){for(const id of m.mutations){const t=settles.get(id);if(t!==undefined){settledLat.push(performance.now()-t);settles.delete(id);settleWaiters.get(id)?.();settleWaiters.delete(id)}}continue}
         if(!c.ready){if(seen.size===0)first.push(performance.now()-t);seen.add(m.sub);if(seen.size===7){c.ready=true;complete.push(performance.now()-t);resolve(c)}}

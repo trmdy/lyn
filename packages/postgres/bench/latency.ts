@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util"
 import { __register, Engine, query, type Session } from "@lyn/core"
-import { decode, type ServerFrame } from "@lyn/core/wire"
+import { createRouter } from "@lyn/core/wire"
 import pg from "pg"
 import { postgres } from "../src/index.ts"
 
@@ -55,9 +55,10 @@ async function main() {
   const arrivals = new Map<number, number>()
   let nextSub = 1
   const subsByName = new Map<number, string>()
+  const router = createRouter()
   const connection = engine.connect((frame) => {
     const now = performance.now()
-    for (const message of decode<ServerFrame>(frame).messages) if ("sub" in message && message.type !== "error") arrivals.set(message.sub, now)
+    for (const message of router.route(frame)) if ("sub" in message && message.type !== "error") arrivals.set(message.sub, now)
   }, null as Session | null)
   const subscribe = async (name: string, args: unknown) => {
     const sub = nextSub++

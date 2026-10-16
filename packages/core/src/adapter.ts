@@ -25,6 +25,12 @@ export type ReadResult<T> = { ok: true; value: T; reads: unknown } | { ok: false
 
 export type Reader = <T>(context: ExecutionContext, run: () => Promise<T>) => Promise<ReadResult<T>>
 
+export interface ReadIndex<K> {
+  set(key: K, reads: unknown): void
+  delete(key: K): void
+  match(batch: ChangeBatch, visit: (key: K) => void): void
+}
+
 export interface Adapter {
   readonly id: string
   start(onChanges: (batch: ChangeBatch) => void): Promise<void>
@@ -32,5 +38,6 @@ export interface Adapter {
   snapshot<T>(after: ChangeBatch[], run: (read: Reader) => Promise<T>): Promise<T>
   write<T>(context: ExecutionContext, run: () => Promise<T>, beforeCommit?: (token: string) => void): Promise<{ value: T; token?: string }>
   affects(reads: unknown, batch: ChangeBatch): boolean
+  createIndex?<K>(): ReadIndex<K>
   isLeader(): boolean
 }

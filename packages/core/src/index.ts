@@ -2,7 +2,7 @@ import { registry, type Definition } from "./registry.ts"
 import { queryKey } from "./wire.ts"
 import type { Change } from "./adapter.ts"
 
-export type { Adapter, Change, ChangeBatch, ExecutionContext, Reader, ReadResult, Row } from "./adapter.ts"
+export type { Adapter, Change, ChangeBatch, ExecutionContext, Reader, ReadIndex, ReadResult, Row } from "./adapter.ts"
 export { Engine } from "./engine.ts"
 
 export interface Register {}

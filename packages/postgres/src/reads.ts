@@ -1,3 +1,4 @@
+import type { ChangeBatch, ReadIndex } from "@lyn/core"
 import { parseSync } from "libpg-query"
 
 type Row = Record<string, unknown>
@@ -291,4 +292,129 @@ export function changeAffects(read: TableRead, change: { source: string; kind: s
   if (read.table !== change.source) return false
   if (change.kind === "truncate" || !read.eq) return true
   return rowMatches(read.eq, change.new) || rowMatches(read.eq, change.old)
+}
+
+class Buckets<K> {
+  readonly #sets = new Map<string, Set<K>>()
+
+  add(bucket: string, key: K) {
+    let set = this.#sets.get(bucket)
+    if (!set) this.#sets.set(bucket, (set = new Set()))
+    set.add(key)
+  }
+
+  remove(bucket: string, key: K) {
+    const set = this.#sets.get(bucket)
+    if (set?.delete(key) && !set.size) this.#sets.delete(bucket)
+  }
+
+  get(bucket: string): Iterable<K> {
+    return this.#sets.get(bucket) ?? []
+  }
+}
+
+type IndexedChange = ChangeBatch["changes"][number]
+
+export class ReadsIndex<K> implements ReadIndex<K> {
+  readonly #entries = new Map<K, { reads: ReadSet | undefined; buckets: [Buckets<K>, string][] }>()
+  readonly #any = new Set<K>()
+  readonly #byTable = new Buckets<K>()
+  readonly #wholeTable = new Buckets<K>()
+  readonly #byColumn = new Buckets<K>()
+  readonly #nulls = new Buckets<K>()
+  readonly #byValue = new Buckets<K>()
+  readonly #columns = new Map<string, Map<string, number>>()
+
+  set(key: K, reads: unknown) {
+    this.delete(key)
+    const readSet = reads as ReadSet | undefined
+    const buckets: [Buckets<K>, string][] = []
+    const add = (target: Buckets<K>, bucket: string) => {
+      target.add(bucket, key)
+      buckets.push([target, bucket])
+    }
+    if (!readSet || readSet.any) this.#any.add(key)
+    else
+      for (const read of readSet.tables) {
+        add(this.#byTable, read.table)
+        const column = read.eq ? Object.keys(read.eq)[0] : undefined
+        if (column === undefined) {
+          add(this.#wholeTable, read.table)
+          continue
+        }
+        const slot = `${read.table}\0${column}`
+        add(this.#byColumn, slot)
+        this.#countColumn(read.table, column, 1)
+        for (const value of read.eq![column]!) {
+          const normal = canonical(value)
+          if (normal === null) add(this.#nulls, slot)
+          else add(this.#byValue, `${slot}\0${typeof normal}:${normal}`)
+        }
+      }
+    this.#entries.set(key, { reads: readSet, buckets })
+  }
+
+  delete(key: K) {
+    const entry = this.#entries.get(key)
+    if (!entry) return
+    this.#entries.delete(key)
+    this.#any.delete(key)
+    for (const [target, bucket] of entry.buckets) target.remove(bucket, key)
+    for (const read of entry.reads?.any ? [] : (entry.reads?.tables ?? [])) {
+      const column = read.eq ? Object.keys(read.eq)[0] : undefined
+      if (column !== undefined) this.#countColumn(read.table, column, -1)
+    }
+  }
+
+  match(batch: ChangeBatch, visit: (key: K) => void) {
+    if (batch.resync) {
+      for (const key of this.#entries.keys()) visit(key)
+      return
+    }
+    if (!batch.changes.length) return
+    const seen = new Set<K>()
+    const accept = (key: K) => {
+      if (seen.has(key)) return
+      seen.add(key)
+      visit(key)
+    }
+    for (const key of this.#any) accept(key)
+    for (const change of batch.changes) {
+      if (change.kind === "truncate") {
+        for (const key of this.#byTable.get(change.source)) accept(key)
+        continue
+      }
+      for (const key of this.#wholeTable.get(change.source)) accept(key)
+      for (const [column] of this.#columns.get(change.source) ?? []) {
+        for (const key of this.#candidates(change, column)) if (!seen.has(key) && this.#affected(key, change)) accept(key)
+      }
+    }
+  }
+
+  *#candidates(change: IndexedChange, column: string): Iterable<K> {
+    const slot = `${change.source}\0${column}`
+    const rows = [change.new, change.old].filter((row): row is Row => row !== undefined)
+    if (rows.some((row) => !(column in row) || canonical(row[column]) === null)) {
+      yield* this.#byColumn.get(slot)
+      return
+    }
+    yield* this.#nulls.get(slot)
+    for (const row of rows) {
+      const normal = canonical(row[column])!
+      yield* this.#byValue.get(`${slot}\0${typeof normal}:${normal}`)
+    }
+  }
+
+  #affected(key: K, change: IndexedChange) {
+    return this.#entries.get(key)?.reads?.tables.some((read) => changeAffects(read, change)) ?? true
+  }
+
+  #countColumn(table: string, column: string, delta: number) {
+    let columns = this.#columns.get(table)
+    if (!columns) this.#columns.set(table, (columns = new Map()))
+    const count = (columns.get(column) ?? 0) + delta
+    if (count > 0) columns.set(column, count)
+    else columns.delete(column)
+    if (!columns.size) this.#columns.delete(table)
+  }
 }
