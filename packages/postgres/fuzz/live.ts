@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util"
 import { __register, Engine, mutation, query, type Reader, type Session } from "@lyn/core"
-import { applyRows, decode, encode, type ServerFrame } from "@lyn/core/wire"
+import { applyRows, decode, encode, fingerprint, type ServerFrame } from "@lyn/core/wire"
 import pg from "pg"
 import { postgres } from "../src/index.ts"
 
@@ -304,6 +304,9 @@ async function main() {
           if (state.version !== undefined) deliveredChanges++
           state.value = message.value
           state.version = message.version
+        } else if (message.type === "unchanged") {
+          state.version = message.version
+          acknowledgements++
         } else {
           if (state.version !== message.from)
             failures.push(`patch for ${state.name} expected version ${state.version} but was from ${message.from}`)
@@ -319,10 +322,25 @@ async function main() {
     return client
   })
 
+  let acknowledgements = 0
+  let matching = 0
+  let stale = 0
   const subscribe = async (client: FakeClient, name: string, args: unknown[]) => {
     const sub = client.nextSub++
-    client.subs.set(sub, { name, args })
-    await engine.subscribe({ clientId: client.connection.id, add: [{ sub, name: `fuzz:${name}`, args: { p: args } }], remove: [] }, client.session)
+    const state: SubState = { name, args }
+    let known: string | undefined
+    if (chance(0.7)) {
+      state.value = await engine.runQuery(`fuzz:${name}`, { p: args }, client.session)
+      if (chance(0.5)) {
+        matching++
+      } else {
+        state.value = { stale: true }
+        stale++
+      }
+      known = await fingerprint(encode(state.value))
+    }
+    client.subs.set(sub, state)
+    await engine.subscribe({ clientId: client.connection.id, add: [{ sub, name: `fuzz:${name}`, args: { p: args }, fingerprint: known }], remove: [] }, client.session)
   }
 
   for (const client of clients)
@@ -461,6 +479,8 @@ async function main() {
     if (step % 50 === 0) console.log(`[fuzz] step ${step}/${steps}`)
   }
 
+  console.log(`[fuzz] fingerprints: ${matching} matching, ${stale} stale, ${acknowledgements} acknowledgements`)
+  if (!matching || !stale || !acknowledgements) failures.push("fingerprint paths were not exercised")
   const subscriptions = clients.reduce((total, client) => total + client.subs.size, 0)
   console.log(
     `[fuzz] ${failures.length ? "FAILED" : "passed"} in ${((Date.now() - started) / 1000).toFixed(1)}s · ${subscriptions} subscriptions · ` +

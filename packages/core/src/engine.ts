@@ -13,6 +13,7 @@ import {
 import { registry, type Definition } from "./registry.ts"
 import {
   diffRows,
+  fingerprint,
   encode,
   queryKey,
   stableStringify,
@@ -40,7 +41,7 @@ type Update =
   | { type: "error"; message: string }
 
 type Evaluation =
-  | { ok: true; value: unknown; encoded: string; reads: unknown; tags: string[] }
+  | { ok: true; value: unknown; encoded: string; fingerprint: string; reads: unknown; tags: string[] }
   | { ok: false; error: string; reads: unknown; tags: string[] }
 
 type Work = { batch?: ChangeBatch; force?: boolean }
@@ -55,13 +56,14 @@ interface Group {
   tags: string[]
   value: unknown
   encoded?: string
+  fingerprint?: string
   version: number
   error?: string
   evaluated: boolean
   running: boolean
   active: boolean
   queued: Work[]
-  subscribers: Map<string, { connection: Connection; sub: number }>
+  subscribers: Map<string, { connection: Connection; sub: number; fingerprint?: string }>
 }
 
 interface PendingMutation {
@@ -207,7 +209,14 @@ export class Engine {
     group.running = false
     if (!group.active) return
     const update = this.#apply(group, evaluation)
-    if (update) for (const { connection, sub } of group.subscribers.values()) this.#deliver(connection, { ...update, sub } as ServerMessage, group)
+    if (update) for (const subscriber of group.subscribers.values()) {
+      const { connection, sub } = subscriber
+      const message: ServerMessage = update.type !== "error" && subscriber.fingerprint === group.fingerprint
+        ? { type: "unchanged", sub, version: group.version }
+        : { ...update, sub }
+      subscriber.fingerprint = undefined
+      this.#deliver(connection, message, group)
+    }
     const rerun = group.queued.filter((item) => item.force || !item.batch || this.adapter.affects(group.reads, item.batch))
     const skipped = group.queued.filter((item) => !rerun.includes(item))
     group.queued = rerun
@@ -283,7 +292,8 @@ export class Engine {
     try {
       const result = await this.#execute(group.name, group.args, group.session, read, tags)
       if (!result.ok) return { ok: false, error: publicMessage(result.error), reads: undefined, tags }
-      return { ok: true, value: result.value, encoded: encode(result.value), reads: result.reads, tags }
+      const encoded = encode(result.value)
+      return { ok: true, value: result.value, encoded, fingerprint: await fingerprint(encoded), reads: result.reads, tags }
     } catch (error) {
       return { ok: false, error: publicMessage(error), reads: undefined, tags }
     }
@@ -303,6 +313,7 @@ export class Engine {
     const from = group.version
     group.value = evaluation.value
     group.encoded = evaluation.encoded
+    group.fingerprint = evaluation.fingerprint
     group.version++
     group.error = undefined
     return patch
@@ -314,6 +325,45 @@ export class Engine {
     const result = await this.adapter.snapshot([], (read) => this.#execute(name, args, session, read))
     if (!result.ok) throw result.error
     return result.value
+  }
+
+  render(session: Session | null) {
+    let closed = false
+    let snapshot: Promise<void> | undefined
+    let reader: Promise<Reader> | undefined
+    let finish!: () => void
+    const finished = new Promise<void>((resolve) => { finish = resolve })
+    const pending = new Set<Promise<unknown>>()
+    const runQuery = (name: string, args: unknown) => {
+      if (closed) return Promise.reject(new Error("lyn: render is closed"))
+      if (!reader) {
+        let available!: (read: Reader) => void
+        let failed!: (error: unknown) => void
+        reader = new Promise<Reader>((resolve, reject) => { available = resolve; failed = reject })
+        snapshot = this.adapter.snapshot([], async (read) => {
+          available(read)
+          await finished
+          await Promise.allSettled(pending)
+        })
+        snapshot.catch(failed)
+      }
+      const result = reader.then(async (read) => {
+        const result = await this.#execute(name, args, session, read)
+        if (!result.ok) throw result.error
+        return result.value
+      })
+      pending.add(result)
+      result.then(() => pending.delete(result), () => pending.delete(result))
+      return result
+    }
+    return {
+      runQuery,
+      close: async () => {
+        closed = true
+        finish()
+        await snapshot
+      },
+    }
   }
 
   connect(send: (frame: string) => void, session: Session | null): Connection {
@@ -357,7 +407,7 @@ export class Engine {
     if (!connection) throw new Error("lyn: unknown client")
     if (connection.sessionKey !== sessionKey(session)) throw new Error("lyn: session changed; reconnect the event stream")
     for (const sub of request.remove) this.#detach(connection, sub)
-    for (const { sub, name, args } of request.add) {
+    for (const { sub, name, args, fingerprint } of request.add) {
       this.#detach(connection, sub)
       const key = `${queryKey(name, args)}@${connection.sessionKey}`
       let group = this.#groups.get(key)
@@ -380,14 +430,16 @@ export class Engine {
         }
         this.#groups.set(key, group)
       }
-      group.subscribers.set(`${connection.id}:${sub}`, { connection, sub })
+      group.subscribers.set(`${connection.id}:${sub}`, { connection, sub, fingerprint: group.evaluated ? undefined : fingerprint })
       connection.subs.set(sub, group)
       if (group.evaluated)
         this.#deliver(
           connection,
           group.error
             ? { type: "error", sub, message: group.error }
-            : { type: "data", sub, version: group.version, value: group.value },
+            : fingerprint === group.fingerprint
+              ? { type: "unchanged", sub, version: group.version }
+              : { type: "data", sub, version: group.version, value: group.value },
           group,
         )
     }

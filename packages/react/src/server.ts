@@ -1,5 +1,5 @@
 import { LynError, publicMessage } from "@lyn/core"
-import { encode } from "@lyn/core/wire"
+import { encode, fingerprint } from "@lyn/core/wire"
 import { createElement, type ComponentType } from "react"
 import { renderToReadableStream } from "react-dom/server"
 import { LynClient, LynProvider } from "./index.ts"
@@ -62,14 +62,14 @@ function htmlSegments() {
 
 export async function renderPage(
   App: ComponentType<{ url: string }>,
-  options: { url: string; baseUrl?: string; signal?: AbortSignal; runQuery: (name: string, args: unknown) => Promise<unknown> },
+  options: { url: string; baseUrl?: string; signal?: AbortSignal; close?: () => Promise<void>; runQuery: (name: string, args: unknown) => Promise<unknown> },
 ) {
   let pending: string[] = []
   const client = new LynClient({
     fetchQuery: async (name, args) => {
       try {
         const value = await options.runQuery(name, args)
-        pending.push(encode([[name, args, value]]))
+        pending.push(encode([[name, args, value, undefined, await fingerprint(encode(value))]]))
         return value
       } catch (error) {
         const message = publicMessage(error)
@@ -81,7 +81,12 @@ export async function renderPage(
   const rendered = await renderToReadableStream(createElement(LynProvider, { client }, createElement(App, { url: options.url })), {
     signal: options.signal,
     onError: publicMessage,
+  }).catch(async (error) => {
+    await options.close?.()
+    throw error
   })
+  const close = () => options.close?.().catch((error) => console.error("[lyn] closing render failed:", error))
+  void rendered.allReady.then(close, close)
   const reader = rendered.getReader()
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
@@ -101,10 +106,20 @@ export async function renderPage(
         }
       } catch (error) {
         controller.error(error)
-        await reader.cancel(error)
+        try {
+          await reader.cancel(error)
+        } finally {
+          await close()
+        }
       }
     },
-    cancel: (reason) => reader.cancel(reason),
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason)
+      } finally {
+        await close()
+      }
+    },
   })
   const base = options.baseUrl ? `window.__LYN_BASE__=${script(options.baseUrl)};` : ""
   return { body, head: `<script>${base}window.__LYN_QUEUE__=[];</script>` }

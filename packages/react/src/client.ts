@@ -23,7 +23,7 @@ export interface Entry {
   name: string
   args: unknown
   sub?: number
-  server?: { value: unknown; version: number }
+  server?: { value: unknown; version: number; fingerprint?: string }
   snapshot: { value: unknown; error?: Error }
   error?: Error
   hydrationSnapshot?: Entry["snapshot"]
@@ -75,12 +75,12 @@ export class LynClient {
 
   ingest(data: string) {
     const touched = new Set<Entry>()
-    for (const [name, args, value, message] of decode<[string, unknown, unknown, string?][]>(data)) {
+    for (const [name, args, value, message, fingerprint] of decode<[string, unknown, unknown, string?, string?][]>(data)) {
       const entry = this.entry(name, args)
       entry.hydrationSnapshot = { value, error: message === undefined ? undefined : new Error(message) }
       clearTimeout(entry.gcTimer)
       if (entry.server || entry.error) continue
-      if (message === undefined) entry.server = { value, version: 0 }
+      if (message === undefined) entry.server = { value, version: 0, fingerprint }
       else entry.error = new Error(message)
       entry.resolveReady()
       clearTimeout(entry.gcTimer)
@@ -199,7 +199,7 @@ export class LynClient {
     queueMicrotask(() => {
       this.#outgoingScheduled = false
       const entries = [...this.#outgoing.add]
-      const add = entries.map((entry) => ({ sub: entry.sub!, name: entry.name, args: entry.args }))
+      const add = entries.map((entry) => ({ sub: entry.sub!, name: entry.name, args: entry.args, fingerprint: entry.error ? undefined : entry.server?.fingerprint }))
       const remove = [...this.#outgoing.remove]
       this.#outgoing = { add: new Set(), remove: new Set() }
       if (!this.#clientId || (!add.length && !remove.length)) return
@@ -260,12 +260,19 @@ export class LynClient {
         this.#queueSubscribe(entry)
         continue
       }
+      if (message.type === "unchanged") {
+        if (!entry.server) {
+          this.#queueSubscribe(entry)
+          continue
+        }
+        entry.server.version = message.version
+      }
       if (message.type === "data") entry.server = { value: message.value, version: message.version }
       if (message.type === "patch") entry.server = { value: applyRows(entry.server!.value, message.patch), version: message.version }
       entry.error = message.type === "error" ? new Error(message.message) : undefined
       entry.resolveReady()
       this.#resync?.keys.delete(entry.key)
-      touched.add(entry)
+      if (message.type !== "unchanged") touched.add(entry)
     }
     if (this.#resync && !this.#resync.keys.size) {
       for (const id of this.#resync.mutations) this.#drop(id, false)

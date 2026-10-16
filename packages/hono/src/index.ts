@@ -94,11 +94,13 @@ export function lyn(options: LynOptions) {
       const html = await template(path)
       const marker = html.indexOf("<!--lyn-app-->")
       if (marker < 0 || !html.slice(0, marker).includes("</head>")) throw new Error("lyn: template needs </head> before <!--lyn-app-->")
+      const render = engine.render(session)
       const page = await renderPage(options.app, {
         url: path,
         baseUrl: c.req.routePath.replace(/\/?\*$/, ""),
         signal: c.req.raw.signal,
-        runQuery: (name, args) => engine.runQuery(name, args, session),
+        runQuery: render.runQuery,
+        close: render.close,
       })
       const encoder = new TextEncoder()
       const reader = page.body.getReader()

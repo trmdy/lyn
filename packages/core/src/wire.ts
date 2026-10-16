@@ -1,6 +1,11 @@
 import { parse, stringify } from "devalue"
 
 export const encode = (value: unknown): string => stringify(value)
+export async function fingerprint(encoded: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(encoded))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
 export const decode = <T = any>(text: string): T => parse(text) as T
 
 export function stableStringify(value: unknown): string {
@@ -23,6 +28,7 @@ export interface RowsPatch {
 
 export type ServerMessage =
   | { type: "data"; sub: number; version: number; value: unknown }
+  | { type: "unchanged"; sub: number; version: number }
   | { type: "patch"; sub: number; from: number; version: number; patch: RowsPatch }
   | { type: "error"; sub: number; message: string }
   | { type: "settled"; mutations: string[] }
@@ -34,7 +40,7 @@ export interface ServerFrame {
 
 export interface SubscribeRequest {
   clientId: string
-  add: { sub: number; name: string; args: unknown }[]
+  add: { sub: number; name: string; args: unknown; fingerprint?: string }[]
   remove: number[]
 }
 

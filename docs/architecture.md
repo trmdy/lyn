@@ -15,6 +15,8 @@ GET /anything-else ──────▶ SSR: stream shell, query data, Suspense
 
 SSR uses React's `renderToReadableStream`. Hono sends the template head and shell as soon as the shell is ready, then forwards completed Suspense boundaries and finally the template suffix. Queries outside Suspense still hold up the shell. Once streaming starts, later failures cannot change the HTTP status; shell failures return 500.
 
+`engine.render(session)` lazily opens one adapter snapshot on the first query and shares its concurrent reader across the request, including queries discovered by later Suspense boundaries. The renderer closes it when React finishes rendering, on shell failure, or on cancellation; it does not retain connections while completed HTML drains to a slow browser. Closing rejects new reads and waits for already-started handlers before releasing the snapshot. The adapter contract is unchanged; it cannot cancel a running handler.
+
 Each query queues a devalue payload before waking React. The renderer emits queued payloads before the next complete top-level HTML segment, buffering partial tags and raw-text elements so scripts never split React markup. The browser drains this queue during hydration and accepts later entries directly into its cache. Hydration reads the original SSR snapshot even if SSE has already delivered a newer value. Query errors carry `publicMessage` text and recover through client error boundaries. React's streamed boundary reveal requires JavaScript; without it, a pending boundary keeps its fallback.
 
 ## The adapter contract
@@ -56,6 +58,8 @@ Each live query (a "group": one query, arguments and session) runs independently
 ## Client
 
 `@lyn/react` keeps one SSE connection per tab, a cache of query entries, and an optimistic layer replayed over server values. All messages from one batch apply in one render.
+
+SSR payloads carry a SHA-256 fingerprint of each value’s devalue encoding. The browser includes it in the initial subscription. Core evaluates new groups to establish their current value and read dependencies, or uses an existing group’s value. If its fingerprint matches, an `unchanged` message supplies only the subscription id and group version. The client retains its hydrated value and snapshot identity without notifying listeners. A stale fingerprint receives full `data`; subsequent patches still require the exact `from` version. Fingerprints are cleared when data or patches replace the value, so a later subscription cannot claim an obsolete fingerprint.
 
 ## Build and runtime
 
