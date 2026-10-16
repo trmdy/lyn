@@ -41,7 +41,7 @@ type Update =
   | { type: "error"; message: string }
 
 type Evaluation =
-  | { ok: true; value: unknown; encoded: string; fingerprint: string; reads: unknown; tags: string[] }
+  | { ok: true; value: unknown; encoded: string; fingerprint?: string; reads: unknown; tags: string[] }
   | { ok: false; error: string; reads: unknown; tags: string[] }
 
 type Work = { batch?: ChangeBatch; force?: boolean }
@@ -56,7 +56,7 @@ interface Group {
   tags: string[]
   value: unknown
   encoded?: string
-  fingerprint?: string
+  fingerprint?: { encoded: string; value: string }
   version: number
   error?: string
   evaluated: boolean
@@ -211,7 +211,7 @@ export class Engine {
     const update = this.#apply(group, evaluation)
     if (update) for (const subscriber of group.subscribers.values()) {
       const { connection, sub } = subscriber
-      const message: ServerMessage = update.type !== "error" && subscriber.fingerprint === group.fingerprint
+      const message: ServerMessage = update.type !== "error" && subscriber.fingerprint !== undefined && subscriber.fingerprint === group.fingerprint?.value
         ? { type: "unchanged", sub, version: group.version }
         : { ...update, sub }
       subscriber.fingerprint = undefined
@@ -293,7 +293,8 @@ export class Engine {
       const result = await this.#execute(group.name, group.args, group.session, read, tags)
       if (!result.ok) return { ok: false, error: publicMessage(result.error), reads: undefined, tags }
       const encoded = encode(result.value)
-      return { ok: true, value: result.value, encoded, fingerprint: await fingerprint(encoded), reads: result.reads, tags }
+      const wanted = [...group.subscribers.values()].some((subscriber) => subscriber.fingerprint !== undefined)
+      return { ok: true, value: result.value, encoded, fingerprint: wanted ? await fingerprint(encoded) : undefined, reads: result.reads, tags }
     } catch (error) {
       return { ok: false, error: publicMessage(error), reads: undefined, tags }
     }
@@ -313,7 +314,7 @@ export class Engine {
     const from = group.version
     group.value = evaluation.value
     group.encoded = evaluation.encoded
-    group.fingerprint = evaluation.fingerprint
+    group.fingerprint = evaluation.fingerprint === undefined ? undefined : { encoded: evaluation.encoded, value: evaluation.fingerprint }
     group.version++
     group.error = undefined
     return patch
@@ -364,6 +365,15 @@ export class Engine {
         await snapshot
       },
     }
+  }
+
+  async #fingerprintOf(group: Group) {
+    const encoded = group.encoded
+    if (encoded === undefined) return undefined
+    if (group.fingerprint?.encoded === encoded) return group.fingerprint.value
+    const value = await fingerprint(encoded)
+    if (group.encoded === encoded) group.fingerprint = { encoded, value }
+    return group.encoded === encoded ? value : undefined
   }
 
   connect(send: (frame: string) => void, session: Session | null): Connection {
@@ -432,16 +442,19 @@ export class Engine {
       }
       group.subscribers.set(`${connection.id}:${sub}`, { connection, sub, fingerprint: group.evaluated ? undefined : fingerprint })
       connection.subs.set(sub, group)
-      if (group.evaluated)
+      if (group.evaluated) {
+        const unchanged = !group.error && fingerprint !== undefined && fingerprint === (await this.#fingerprintOf(group))
+        if (connection.subs.get(sub) !== group) continue
         this.#deliver(
           connection,
           group.error
             ? { type: "error", sub, message: group.error }
-            : fingerprint === group.fingerprint
+            : unchanged
               ? { type: "unchanged", sub, version: group.version }
               : { type: "data", sub, version: group.version, value: group.value },
           group,
         )
+      }
     }
     this.#scheduleWave()
   }
