@@ -1,0 +1,19 @@
+{
+  "name": "vs-rust-lyn",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "NODE_ENV=production node server.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@lyn/core": "workspace:*",
+    "@lyn/hono": "workspace:*",
+    "@lyn/postgres": "workspace:*",
+    "@lyn/react": "workspace:*",
+    "hono": "^4.13.13",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "vs-load"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hdrhistogram = "7"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,13 @@
+[workspace]
+members = ["server", "load"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio-postgres = { git = "https://github.com/MaterializeInc/rust-postgres", rev = "fcca71c8a6ee351eda7b6dfcd607055fa9a6d302" }
+postgres-replication = { git = "https://github.com/MaterializeInc/rust-postgres", rev = "fcca71c8a6ee351eda7b6dfcd607055fa9a6d302" }
+postgres-types = { git = "https://github.com/MaterializeInc/rust-postgres", rev = "fcca71c8a6ee351eda7b6dfcd607055fa9a6d302" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
