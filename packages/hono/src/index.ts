@@ -1,3 +1,4 @@
+import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response"
 import { Engine, publicMessage, type Adapter, type Session } from "@lyn/core"
 import { decode, encode } from "@lyn/core/wire"
 import { renderPage } from "@lyn/react/server"
@@ -13,6 +14,15 @@ export interface LynOptions {
 }
 
 type Template = (url: string) => Promise<string>
+
+interface NodeResponse {
+  writeHead(status: number, headers: Record<string, string>): unknown
+  flushHeaders?(): void
+  write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean
+  end(): unknown
+  on(event: "close", listener: () => void): unknown
+}
+
 
 let template: Template = async () => {
   throw new Error("lyn: no HTML template registered; run through the lyn CLI or call setTemplate()")
@@ -52,8 +62,40 @@ export function lyn(options: LynOptions) {
     return next()
   })
 
+  const streamToNode = (outgoing: NodeResponse, session: Session | null) => {
+    outgoing.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+    outgoing.flushHeaders?.()
+    let pending = 0
+    let open = true
+    const written = (error?: Error | null) => {
+      pending--
+      if (error) close()
+    }
+    const close = () => {
+      if (!open) return
+      open = false
+      clearInterval(ping)
+      engine.disconnect(connection.id)
+      outgoing.end()
+    }
+    const connection = engine.connect((frame, shared) => {
+      if (!open) return
+      if (pending >= maxPending) return close()
+      pending++
+      outgoing.write(frameBytes(frame, shared), written)
+    }, session)
+    const ping = setInterval(() => outgoing.write(": ping\n\n"), 15_000)
+    outgoing.on("close", close)
+    outgoing.write(`event: hello\ndata: ${JSON.stringify({ clientId: connection.id })}\nretry: 1000\n\n`)
+  }
+
   app.get("/_lyn/events", async (c) => {
     const session = await sessionOf(c)
+    const outgoing = (c.env as { outgoing?: NodeResponse } | undefined)?.outgoing
+    if (outgoing) {
+      streamToNode(outgoing, session)
+      return RESPONSE_ALREADY_SENT
+    }
     return streamSSE(c, async (stream) => {
       let pending = 0
       let open = true

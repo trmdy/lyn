@@ -109,16 +109,20 @@ class TempSlotPgoutput extends PgoutputPlugin {
 
 const XID_SPACE = 1n << 32n
 
-export function snapshotIncludes(xid32: number, snapshot: string) {
+export function snapshotVisibility(snapshot: string) {
   const [xminText, xmaxText, xipText] = snapshot.split(":")
   const xmin = BigInt(xminText!)
   const xmax = BigInt(xmaxText!)
   const inProgress = new Set((xipText ?? "").split(",").filter(Boolean).map(BigInt))
-  let delta = (BigInt(xid32) - (xmax % XID_SPACE) + XID_SPACE) % XID_SPACE
-  if (delta >= XID_SPACE / 2n) delta -= XID_SPACE
-  const xid = xmax + delta
-  return xid < xmin || (xid < xmax && !inProgress.has(xid))
+  return (xid32: number) => {
+    let delta = (BigInt(xid32) - (xmax % XID_SPACE) + XID_SPACE) % XID_SPACE
+    if (delta >= XID_SPACE / 2n) delta -= XID_SPACE
+    const xid = xmax + delta
+    return xid < xmin || (xid < xmax && !inProgress.has(xid))
+  }
 }
+
+export const snapshotIncludes = (xid32: number, snapshot: string) => snapshotVisibility(snapshot)(xid32)
 
 const sourceName = (schema: string, name: string) => (schema === "public" ? name : `${schema}.${name}`)
 
@@ -194,7 +198,7 @@ export class PostgresAdapter implements Adapter {
   }
 
   async snapshot<T>(after: ChangeBatch[], run: (read: Reader) => Promise<T>): Promise<T> {
-    const xids = after.flatMap((batch) => batch.tokens).map(Number)
+    const xids = [...new Set(after.flatMap((batch) => batch.tokens))].map(Number)
     const leader = await this.pool.connectDirect()
     const clients = [leader]
     const idle: pg.PoolClient[] = []
@@ -206,7 +210,7 @@ export class PostgresAdapter implements Adapter {
       for (let attempt = 0; ; attempt++) {
         await leader.query("begin isolation level repeatable read read only")
         const { rows } = await leader.query("select pg_current_snapshot()::text as snapshot, pg_export_snapshot() as exported")
-        if (xids.every((xid) => snapshotIncludes(xid, rows[0].snapshot))) {
+        if (xids.every(snapshotVisibility(rows[0].snapshot))) {
           exported = rows[0].exported
           break
         }

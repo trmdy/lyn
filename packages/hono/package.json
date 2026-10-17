@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@lyn/core": "workspace:*",
-    "@lyn/react": "workspace:*"
+    "@lyn/react": "workspace:*",
+    "@hono/node-server": "^2.1.5"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",

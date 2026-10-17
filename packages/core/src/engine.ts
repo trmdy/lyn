@@ -67,6 +67,8 @@ interface Group {
   name: string
   args: unknown
   reads: unknown
+  readsKey?: string
+  startedAt: number
   tags: string[]
   value: unknown
   encoded?: string
@@ -153,8 +155,14 @@ export class Engine {
   readonly #index: ReadIndex<Group>
   readonly #waiting = new Set<Group>()
   readonly #running = new Set<Group>()
+  readonly #log: ChangeBatch[] = []
+  #logStart = 0
+  #nextSeq = 0
+  readonly #runningSince = new Map<number, number>()
   #nextGroupId = 1
   #lastExpiry = 0
+  readonly #flushQueue = new Set<Connection>()
+  #flushScheduled = false
   #waveScheduled = false
   #retryDelay = 0
   #effects: Promise<unknown> = Promise.resolve()
@@ -195,13 +203,11 @@ export class Engine {
       queued.add(group)
       this.#queue(group, work)
     }
+    if (this.#running.size) this.#log.push(batch)
+    else this.#logStart++
+    this.#nextSeq++
     if (batch.resync) for (const group of this.#groups.values()) add(group)
-    else {
-      this.#index.match(batch, (group) => {
-        if (!group.running) add(group)
-      })
-      for (const group of this.#running) add(group)
-    }
+    else this.#index.match(batch, add)
     const now = Date.now()
     if (now - this.#lastExpiry > 1_000) {
       this.#lastExpiry = now
@@ -249,9 +255,11 @@ export class Engine {
       if (group.running || !group.queued.length || !group.active) continue
       work.set(group, group.queued.splice(0))
       group.running = true
+      group.startedAt = this.#nextSeq
       this.#running.add(group)
     }
     if (!work.size) return
+    this.#runningSince.set(this.#nextSeq, (this.#runningSince.get(this.#nextSeq) ?? 0) + work.size)
     const after = [...new Set([...work.values()].flat().flatMap((item) => (item.batch ? [item.batch] : [])))]
     this.#runWave(work, after)
   }
@@ -265,8 +273,7 @@ export class Engine {
     } catch (error) {
       for (const [group, covered] of work) {
         if (!group.running) continue
-        group.running = false
-        this.#running.delete(group)
+        this.#stopRunning(group)
         group.queued.unshift(...covered)
         if (group.active) this.#waiting.add(group)
       }
@@ -276,11 +283,43 @@ export class Engine {
     }
   }
 
-  #finish(group: Group, covered: Work[], evaluation: Evaluation) {
+  #stopRunning(group: Group) {
     group.running = false
     this.#running.delete(group)
-    if (!group.active) return
+    const remaining = (this.#runningSince.get(group.startedAt) ?? 1) - 1
+    if (remaining > 0) this.#runningSince.set(group.startedAt, remaining)
+    else this.#runningSince.delete(group.startedAt)
+    const oldest = this.#runningSince.keys().next()
+    const keepFrom = oldest.done ? this.#nextSeq : oldest.value
+    if (keepFrom > this.#logStart) {
+      this.#log.splice(0, keepFrom - this.#logStart)
+      this.#logStart = keepFrom
+    }
+  }
+
+  #recheckSinceStart(group: Group) {
+    const queued = new Set(group.queued.map((item) => item.batch))
+    for (let index = Math.max(0, group.startedAt - this.#logStart); index < this.#log.length; index++) {
+      const batch = this.#log[index]!
+      if (queued.has(batch) || !this.adapter.affects(group.reads, batch)) continue
+      group.queued.push({ batch })
+      for (const token of batch.tokens) {
+        const pending = this.#pending.get(token)
+        const connection = pending?.connectionId ? this.#connections.get(pending.connectionId) : undefined
+        if (!pending?.groups || !connection || ![...connection.subs.values()].includes(group)) continue
+        pending.groups.add(group)
+        pending.affected?.add(group)
+        connection.pending.add(pending)
+      }
+    }
+  }
+
+  #finish(group: Group, covered: Work[], evaluation: Evaluation) {
+    const readsBefore = group.readsKey
+    if (!group.active) return this.#stopRunning(group)
     const update = this.#apply(group, evaluation)
+    if (group.readsKey !== readsBefore) this.#recheckSinceStart(group)
+    this.#stopRunning(group)
     if (update) {
       const shared = outgoing({ ...update, group: group.id } as ServerMessage)
       const sharedSent = new Set<Connection>()
@@ -356,13 +395,23 @@ export class Engine {
     connection.outbox.push(message)
     if (connection.flushing) return
     connection.flushing = true
+    this.#flushQueue.add(connection)
+    if (this.#flushScheduled) return
+    this.#flushScheduled = true
     soon(() => {
-      connection.flushing = false
-      const messages = connection.outbox.splice(0)
-      if (!messages.length || this.#connections.get(connection.id) !== connection) return
-      if (messages.length === 1) connection.send((messages[0]!.frame ??= frameOf([messages[0]!.text])), true)
-      else connection.send(frameOf(messages.map((item) => item.text)), false)
+      this.#flushScheduled = false
+      const queued = [...this.#flushQueue]
+      this.#flushQueue.clear()
+      for (const connection of queued) this.#flush(connection)
     })
+  }
+
+  #flush(connection: Connection) {
+    connection.flushing = false
+    const messages = connection.outbox.splice(0)
+    if (!messages.length || this.#connections.get(connection.id) !== connection) return
+    if (messages.length === 1) connection.send((messages[0]!.frame ??= frameOf([messages[0]!.text])), true)
+    else connection.send(frameOf(messages.map((item) => item.text)), false)
   }
 
   #definition(name: string, kind: Definition["kind"]) {
@@ -399,8 +448,10 @@ export class Engine {
   }
 
   #apply(group: Group, evaluation: Evaluation): Update | null {
-    if (group.reads !== evaluation.reads) this.#index.set(group, evaluation.reads)
+    const readsKey = evaluation.reads === undefined ? undefined : stableStringify(evaluation.reads)
+    if (readsKey !== group.readsKey || readsKey === undefined) this.#index.set(group, evaluation.reads)
     group.reads = evaluation.reads
+    group.readsKey = readsKey
     group.tags = evaluation.tags
     group.evaluated = true
     if (!evaluation.ok) {
@@ -534,6 +585,7 @@ export class Engine {
           name,
           args,
           reads: undefined,
+          startedAt: 0,
           tags: [],
           value: undefined,
           version: 0,
