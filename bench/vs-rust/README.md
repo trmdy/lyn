@@ -19,6 +19,8 @@ Run: `./run.sh` on Linux (needs `cargo build --release`, `pnpm install`, Postgre
 
 ## Results: metal-1 (AMD EPYC 9454P), 2026-10-17
 
+The first tables are the original run (`results-metal-1.jsonl`). Lyn was re-run after `0d3913d` (running queries no longer amplify backlogs; SSE writes go straight to Node); see the last section.
+
 Raw data: `results-metal-1.jsonl`. Server and Postgres CPU are measured from `/proc` during the run.
 
 ## HTTP (256 concurrent, 15 s)
@@ -67,3 +69,33 @@ Raw data: `results-metal-1.jsonl`. Server and Postgres CPU are measured from `/p
 | lyn8 | 200 | 200 | 197 | 1.000 | 3.7 | 9.36 | 30.67 | 2.13 | 0.39 | 0.05 | 720 |
 | lyn8 | 1000 | 1000 | 986 | 1.000 | 2.26 | 10.85 | 70.72 | 1.46 | 0.74 | 0.66 | 883 |
 | lyn8 | 2000 | 83 | 82 | 1.000 | 119275.52 | 344719.36 | 350224.38 | 118161.41 | 1.14 | 1.38 | 1752 |
+
+## Lyn after `0d3913d`
+
+Raw data: `results-metal-1-lyn-after.jsonl`. Rust numbers above are unchanged. One Postgres CPU reading in this run underflowed (fixed in the load generator since) and is omitted.
+
+## HTTP (256 concurrent, 15 s)
+| config | path | req/s | p50 ms | p99 ms | server cores | pg cores | req/s per server core |
+|---|---|---|---|---|---|---|---|
+| lyn1 | /api/items | 15,636 | 15.94 | 21.3 | 1.0 | 2.01 | 15,636 |
+| lyn1 | / | 1,834 | 133.12 | 211.07 | 1.0 | 1.06 | 1,834 |
+| lyn8 | /api/items | 15,965 | 15.81 | 18.06 | 1.03 | 2.35 | 15,500 |
+| lyn8 | / | 2,147 | 116.74 | 137.47 | 1.33 | 0.81 | 1,614 |
+
+## shared
+| config | writes/s asked | achieved | deliveries/s | delivered | p50 ms | p99 ms | max ms | write p50 ms | server cores | pg cores | RSS MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| lyn1 | 10 | 9 | 84,633 | 0.992 | 345.09 | 555.01 | 651.26 | 161.15 | 0.77 | 0.01 | 430 |
+| lyn8 | 10 | 9 | 85,289 | 1.000 | 213.5 | 558.59 | 633.34 | 109.82 | 0.81 | 0.01 | 422 |
+
+## precise
+| config | writes/s asked | achieved | deliveries/s | delivered | p50 ms | p99 ms | max ms | write p50 ms | server cores | pg cores | RSS MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| lyn1 | 200 | 200 | 197 | 1.000 | 3.92 | 9.9 | 17.42 | 2.51 | 0.32 | 0.03 | 494 |
+| lyn1 | 1000 | 1000 | 986 | 1.000 | 2.35 | 173.31 | 257.15 | 1.55 | 0.64 | 0.7 | 586 |
+| lyn1 | 2000 | 1864 | 1,839 | 0.999 | 990.72 | 1167.36 | 1179.65 | 923.65 | 0.88 | 1.38 | 584 |
+| lyn1 | 5000 | 1883 | 1,873 | 0.999 | 12820.48 | 24657.92 | 24870.91 | 12754.94 | 0.95 | 1.5 | 806 |
+| lyn8 | 200 | 200 | 197 | 1.000 | 3.51 | 6.94 | 14.88 | 2.13 | 0.34 | n/a | 496 |
+| lyn8 | 1000 | 1000 | 988 | 1.000 | 2.28 | 6.22 | 53.28 | 1.61 | 0.68 | 0.46 | 602 |
+| lyn8 | 2000 | 1957 | 1,929 | 0.999 | 205.18 | 421.89 | 441.6 | 138.24 | 1.01 | 1.38 | 638 |
+| lyn8 | 5000 | 2018 | 2,006 | 0.999 | 11206.66 | 22020.1 | 22216.7 | 11141.12 | 1.05 | 1.58 | 919 |

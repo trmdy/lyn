@@ -365,8 +365,8 @@ fn usage(args: &Args) -> Usage {
 fn usage_json(before: &Usage, after: &Usage) -> serde_json::Value {
     let seconds = after.at.duration_since(before.at).as_secs_f64();
     serde_json::json!({
-        "serverCores": ((after.server - before.server) as f64 / 100.0 / seconds * 100.0).round() / 100.0,
-        "postgresCores": ((after.postgres - before.postgres) as f64 / 100.0 / seconds * 100.0).round() / 100.0,
+        "serverCores": (after.server.saturating_sub(before.server) as f64 / 100.0 / seconds * 100.0).round() / 100.0,
+        "postgresCores": (after.postgres.saturating_sub(before.postgres) as f64 / 100.0 / seconds * 100.0).round() / 100.0,
     })
 }
 
