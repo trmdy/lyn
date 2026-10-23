@@ -71,7 +71,8 @@ export async function renderPage(
     fetchQuery: async (name, args) => {
       try {
         const value = await options.runQuery(name, args)
-        pending.push(encode([[name, args, value, undefined, await fingerprint(encode(value))]]))
+        const hash = await fingerprint(encode(value))
+        pending.push(encode([[name, args, value, undefined, hash]]))
         return value
       } catch (error) {
         const message = publicMessage(error)
