@@ -77,7 +77,14 @@ export class LynClient {
     this.#baseUrl = options.baseUrl ?? ""
     this.#gcTime = options.gcTime ?? 10_000
     if (options.initial) this.ingest(options.initial)
-    if (!this.#fetchQuery && typeof EventSource !== "undefined") this.#connect()
+    if (!this.#fetchQuery && typeof EventSource !== "undefined") {
+      this.#connect()
+      if (typeof document !== "undefined" && document.readyState === "loading")
+        document.addEventListener("DOMContentLoaded", () => {
+          if (!this.#clientId) return
+          for (const entry of this.#entries.values()) if (entry.sub === undefined) this.#queueSubscribe(entry)
+        }, { once: true })
+    }
   }
 
   ingest(data: string) {
@@ -89,6 +96,7 @@ export class LynClient {
       if (message === undefined) entry.server = { value, version: 0, fingerprint }
       else entry.error = new Error(message)
       entry.resolveReady()
+      if (this.#clientId && entry.sub === undefined) this.#queueSubscribe(entry)
       touched.add(entry)
     }
     this.#recompute(touched)
@@ -196,6 +204,7 @@ export class LynClient {
   }
 
   #queueSubscribe(entry: Entry) {
+    if (!entry.server && !entry.error && typeof document !== "undefined" && document.readyState === "loading") return
     if (entry.sub !== undefined) {
       this.#bySub.delete(entry.sub)
       this.#router.forget(entry.sub)
